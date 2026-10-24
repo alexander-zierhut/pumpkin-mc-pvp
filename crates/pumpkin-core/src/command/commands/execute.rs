@@ -13,9 +13,7 @@
     clippy::struct_excessive_bools
 )]
 
-use crate::command::argument_builder::{
-    ArgumentBuilder, RequiredArgumentBuilder, argument, command, literal,
-};
+use crate::command::argument_builder::{ArgumentBuilder, argument, command, literal};
 use crate::command::argument_types::block::BlockArgumentType;
 use crate::command::argument_types::coordinates::block_pos::BlockPosArgumentType;
 use crate::command::argument_types::coordinates::rotation::RotationArgumentType;
@@ -481,10 +479,31 @@ impl CommandExecutor for ConditionalExecutor {
     }
 }
 
-fn add_conditional(
-    builder: RequiredArgumentBuilder,
+/// Vanilla `ExecuteCommand` terminal `if entity`: passes with the number of matching entities.
+struct EntityCountExecutor;
+
+impl CommandExecutor for EntityCountExecutor {
+    fn execute(&self, context: &CommandContext) -> CommandExecutorResult {
+        let count = EntityArgumentType::get_optional_entities(context, "targets")?.len();
+        if count == 0 {
+            return Err(ERROR_CONDITIONAL_FAILED.create_without_context());
+        }
+        context.source.send_feedback(
+            TextComponent::translate_cross(
+                translation::java::COMMANDS_EXECUTE_CONDITIONAL_PASS_COUNT,
+                translation::java::COMMANDS_EXECUTE_CONDITIONAL_PASS_COUNT,
+                [TextComponent::text(count.to_string())],
+            ),
+            false,
+        );
+        Ok(i32::try_from(count).unwrap_or(i32::MAX))
+    }
+}
+
+fn add_conditional<B: ArgumentBuilder>(
+    builder: B,
     modifier: fn(&CommandContext) -> RedirectModifierResult,
-) -> RequiredArgumentBuilder {
+) -> B {
     builder
         .fork(
             Redirection::Root,
@@ -1234,43 +1253,57 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistr
         )
         .then(
             literal("if")
-                .then(literal("entity").then(
-                    argument("targets", EntityArgumentType::Entities).redirect_with_modifier(
-                        Redirection::Root,
-                        RedirectModifier::Custom(Arc::new(execute_if_entity_modifier)),
-                    ),
-                ))
                 .then(
-                    literal("block").then(argument("pos", BlockPosArgumentType).then(
-                        argument("block", BlockArgumentType).redirect_with_modifier(
-                            Redirection::Root,
-                            RedirectModifier::Custom(Arc::new(execute_if_block_modifier)),
-                        ),
-                    )),
-                )
-                .then(literal("loaded").then(
-                    argument("pos", BlockPosArgumentType).redirect_with_modifier(
-                        Redirection::Root,
-                        RedirectModifier::Custom(Arc::new(execute_if_loaded_modifier)),
+                    literal("entity").then(
+                        argument("targets", EntityArgumentType::Entities)
+                            .fork(
+                                Redirection::Root,
+                                RedirectModifier::Custom(Arc::new(execute_if_entity_modifier)),
+                            )
+                            .executes(EntityCountExecutor),
                     ),
-                ))
+                )
+                .then(
+                    literal("block").then(
+                        argument("pos", BlockPosArgumentType).then(
+                            argument("block", BlockArgumentType)
+                                .fork(
+                                    Redirection::Root,
+                                    RedirectModifier::Custom(Arc::new(execute_if_block_modifier)),
+                                )
+                                .executes(ConditionalExecutor(execute_if_block_modifier)),
+                        ),
+                    ),
+                )
+                .then(
+                    literal("loaded").then(
+                        argument("pos", BlockPosArgumentType)
+                            .fork(
+                                Redirection::Root,
+                                RedirectModifier::Custom(Arc::new(execute_if_loaded_modifier)),
+                            )
+                            .executes(ConditionalExecutor(execute_if_loaded_modifier)),
+                    ),
+                )
                 .then(
                     literal("dimension").then(
                         argument("dimension", ResourceKeyArgument(DIMENSION_REGISTRY))
-                            .redirect_with_modifier(
+                            .fork(
                                 Redirection::Root,
                                 RedirectModifier::Custom(Arc::new(execute_if_dimension_modifier)),
-                            ),
+                            )
+                            .executes(ConditionalExecutor(execute_if_dimension_modifier)),
                     ),
                 )
                 .then(
                     literal("biome").then(
                         argument("pos", BlockPosArgumentType).then(
                             argument("biome", ResourceOrTagArgument(BIOME_REGISTRY.clone()))
-                                .redirect_with_modifier(
+                                .fork(
                                     Redirection::Root,
                                     RedirectModifier::Custom(Arc::new(execute_if_biome_modifier)),
-                                ),
+                                )
+                                .executes(ConditionalExecutor(execute_if_biome_modifier)),
                         ),
                     ),
                 )
@@ -1279,18 +1312,30 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistr
                         argument("start", BlockPosArgumentType).then(
                             argument("end", BlockPosArgumentType).then(
                                 argument("destination", BlockPosArgumentType)
-                                    .then(literal("all").redirect_with_modifier(
-                                        Redirection::Root,
-                                        RedirectModifier::Custom(Arc::new(
-                                            execute_if_blocks_all_modifier,
-                                        )),
-                                    ))
-                                    .then(literal("masked").redirect_with_modifier(
-                                        Redirection::Root,
-                                        RedirectModifier::Custom(Arc::new(
-                                            execute_if_blocks_masked_modifier,
-                                        )),
-                                    )),
+                                    .then(
+                                        literal("all")
+                                            .fork(
+                                                Redirection::Root,
+                                                RedirectModifier::Custom(Arc::new(
+                                                    execute_if_blocks_all_modifier,
+                                                )),
+                                            )
+                                            .executes(ConditionalExecutor(
+                                                execute_if_blocks_all_modifier,
+                                            )),
+                                    )
+                                    .then(
+                                        literal("masked")
+                                            .fork(
+                                                Redirection::Root,
+                                                RedirectModifier::Custom(Arc::new(
+                                                    execute_if_blocks_masked_modifier,
+                                                )),
+                                            )
+                                            .executes(ConditionalExecutor(
+                                                execute_if_blocks_masked_modifier,
+                                            )),
+                                    ),
                             ),
                         ),
                     ),
@@ -1349,88 +1394,128 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistr
                 .then(
                     literal("data")
                         .then(
-                            literal("block").then(argument("pos", BlockPosArgumentType).then(
-                                argument("path", NbtPathArgumentType).redirect_with_modifier(
-                                    Redirection::Root,
-                                    RedirectModifier::Custom(Arc::new(
-                                        execute_if_data_block_modifier,
-                                    )),
+                            literal("block").then(
+                                argument("pos", BlockPosArgumentType).then(
+                                    argument("path", NbtPathArgumentType)
+                                        .fork(
+                                            Redirection::Root,
+                                            RedirectModifier::Custom(Arc::new(
+                                                execute_if_data_block_modifier,
+                                            )),
+                                        )
+                                        .executes(ConditionalExecutor(
+                                            execute_if_data_block_modifier,
+                                        )),
                                 ),
-                            )),
+                            ),
                         )
-                        .then(literal("entity").then(
-                            argument("target", EntityArgumentType::Entity).then(
-                                argument("path", NbtPathArgumentType).redirect_with_modifier(
-                                    Redirection::Root,
-                                    RedirectModifier::Custom(Arc::new(
-                                        execute_if_data_entity_modifier,
-                                    )),
+                        .then(
+                            literal("entity").then(
+                                argument("target", EntityArgumentType::Entity).then(
+                                    argument("path", NbtPathArgumentType)
+                                        .fork(
+                                            Redirection::Root,
+                                            RedirectModifier::Custom(Arc::new(
+                                                execute_if_data_entity_modifier,
+                                            )),
+                                        )
+                                        .executes(ConditionalExecutor(
+                                            execute_if_data_entity_modifier,
+                                        )),
                                 ),
                             ),
-                        ))
-                        .then(literal("storage").then(
-                            argument("id", IdentifierArgumentType).then(
-                                argument("path", NbtPathArgumentType).redirect_with_modifier(
-                                    Redirection::Root,
-                                    RedirectModifier::Custom(Arc::new(
-                                        execute_if_data_storage_modifier,
-                                    )),
+                        )
+                        .then(
+                            literal("storage").then(
+                                argument("id", IdentifierArgumentType).then(
+                                    argument("path", NbtPathArgumentType)
+                                        .fork(
+                                            Redirection::Root,
+                                            RedirectModifier::Custom(Arc::new(
+                                                execute_if_data_storage_modifier,
+                                            )),
+                                        )
+                                        .executes(ConditionalExecutor(
+                                            execute_if_data_storage_modifier,
+                                        )),
                                 ),
                             ),
-                        )),
+                        ),
                 )
                 .then(
-                    literal("stopwatch").then(argument("id", IdentifierArgumentType).then(
-                        argument("range", FloatRangeArgumentType).redirect_with_modifier(
-                            Redirection::Root,
-                            RedirectModifier::Custom(Arc::new(execute_if_stopwatch_modifier)),
+                    literal("stopwatch").then(
+                        argument("id", IdentifierArgumentType).then(
+                            argument("range", FloatRangeArgumentType)
+                                .fork(
+                                    Redirection::Root,
+                                    RedirectModifier::Custom(Arc::new(
+                                        execute_if_stopwatch_modifier,
+                                    )),
+                                )
+                                .executes(ConditionalExecutor(execute_if_stopwatch_modifier)),
                         ),
-                    )),
+                    ),
                 ),
         )
         .then(
             literal("unless")
-                .then(literal("entity").then(
-                    argument("targets", EntityArgumentType::Entities).redirect_with_modifier(
-                        Redirection::Root,
-                        RedirectModifier::Custom(Arc::new(execute_unless_entity_modifier)),
-                    ),
-                ))
                 .then(
-                    literal("block").then(argument("pos", BlockPosArgumentType).then(
-                        argument("block", BlockArgumentType).redirect_with_modifier(
-                            Redirection::Root,
-                            RedirectModifier::Custom(Arc::new(execute_unless_block_modifier)),
-                        ),
-                    )),
-                )
-                .then(literal("loaded").then(
-                    argument("pos", BlockPosArgumentType).redirect_with_modifier(
-                        Redirection::Root,
-                        RedirectModifier::Custom(Arc::new(execute_unless_loaded_modifier)),
+                    literal("entity").then(
+                        argument("targets", EntityArgumentType::Entities)
+                            .fork(
+                                Redirection::Root,
+                                RedirectModifier::Custom(Arc::new(execute_unless_entity_modifier)),
+                            )
+                            .executes(ConditionalExecutor(execute_unless_entity_modifier)),
                     ),
-                ))
+                )
+                .then(
+                    literal("block").then(
+                        argument("pos", BlockPosArgumentType).then(
+                            argument("block", BlockArgumentType)
+                                .fork(
+                                    Redirection::Root,
+                                    RedirectModifier::Custom(Arc::new(
+                                        execute_unless_block_modifier,
+                                    )),
+                                )
+                                .executes(ConditionalExecutor(execute_unless_block_modifier)),
+                        ),
+                    ),
+                )
+                .then(
+                    literal("loaded").then(
+                        argument("pos", BlockPosArgumentType)
+                            .fork(
+                                Redirection::Root,
+                                RedirectModifier::Custom(Arc::new(execute_unless_loaded_modifier)),
+                            )
+                            .executes(ConditionalExecutor(execute_unless_loaded_modifier)),
+                    ),
+                )
                 .then(
                     literal("dimension").then(
                         argument("dimension", ResourceKeyArgument(DIMENSION_REGISTRY))
-                            .redirect_with_modifier(
+                            .fork(
                                 Redirection::Root,
                                 RedirectModifier::Custom(Arc::new(
                                     execute_unless_dimension_modifier,
                                 )),
-                            ),
+                            )
+                            .executes(ConditionalExecutor(execute_unless_dimension_modifier)),
                     ),
                 )
                 .then(
                     literal("biome").then(
                         argument("pos", BlockPosArgumentType).then(
                             argument("biome", ResourceOrTagArgument(BIOME_REGISTRY.clone()))
-                                .redirect_with_modifier(
+                                .fork(
                                     Redirection::Root,
                                     RedirectModifier::Custom(Arc::new(
                                         execute_unless_biome_modifier,
                                     )),
-                                ),
+                                )
+                                .executes(ConditionalExecutor(execute_unless_biome_modifier)),
                         ),
                     ),
                 )
@@ -1439,18 +1524,30 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistr
                         argument("start", BlockPosArgumentType).then(
                             argument("end", BlockPosArgumentType).then(
                                 argument("destination", BlockPosArgumentType)
-                                    .then(literal("all").redirect_with_modifier(
-                                        Redirection::Root,
-                                        RedirectModifier::Custom(Arc::new(
-                                            execute_unless_blocks_all_modifier,
-                                        )),
-                                    ))
-                                    .then(literal("masked").redirect_with_modifier(
-                                        Redirection::Root,
-                                        RedirectModifier::Custom(Arc::new(
-                                            execute_unless_blocks_masked_modifier,
-                                        )),
-                                    )),
+                                    .then(
+                                        literal("all")
+                                            .fork(
+                                                Redirection::Root,
+                                                RedirectModifier::Custom(Arc::new(
+                                                    execute_unless_blocks_all_modifier,
+                                                )),
+                                            )
+                                            .executes(ConditionalExecutor(
+                                                execute_unless_blocks_all_modifier,
+                                            )),
+                                    )
+                                    .then(
+                                        literal("masked")
+                                            .fork(
+                                                Redirection::Root,
+                                                RedirectModifier::Custom(Arc::new(
+                                                    execute_unless_blocks_masked_modifier,
+                                                )),
+                                            )
+                                            .executes(ConditionalExecutor(
+                                                execute_unless_blocks_masked_modifier,
+                                            )),
+                                    ),
                             ),
                         ),
                     ),
@@ -1509,43 +1606,67 @@ pub fn register(dispatcher: &mut CommandDispatcher, registry: &PermissionRegistr
                 .then(
                     literal("data")
                         .then(
-                            literal("block").then(argument("pos", BlockPosArgumentType).then(
-                                argument("path", NbtPathArgumentType).redirect_with_modifier(
-                                    Redirection::Root,
-                                    RedirectModifier::Custom(Arc::new(
-                                        execute_unless_data_block_modifier,
-                                    )),
+                            literal("block").then(
+                                argument("pos", BlockPosArgumentType).then(
+                                    argument("path", NbtPathArgumentType)
+                                        .fork(
+                                            Redirection::Root,
+                                            RedirectModifier::Custom(Arc::new(
+                                                execute_unless_data_block_modifier,
+                                            )),
+                                        )
+                                        .executes(ConditionalExecutor(
+                                            execute_unless_data_block_modifier,
+                                        )),
                                 ),
-                            )),
+                            ),
                         )
-                        .then(literal("entity").then(
-                            argument("target", EntityArgumentType::Entity).then(
-                                argument("path", NbtPathArgumentType).redirect_with_modifier(
-                                    Redirection::Root,
-                                    RedirectModifier::Custom(Arc::new(
-                                        execute_unless_data_entity_modifier,
-                                    )),
+                        .then(
+                            literal("entity").then(
+                                argument("target", EntityArgumentType::Entity).then(
+                                    argument("path", NbtPathArgumentType)
+                                        .fork(
+                                            Redirection::Root,
+                                            RedirectModifier::Custom(Arc::new(
+                                                execute_unless_data_entity_modifier,
+                                            )),
+                                        )
+                                        .executes(ConditionalExecutor(
+                                            execute_unless_data_entity_modifier,
+                                        )),
                                 ),
                             ),
-                        ))
-                        .then(literal("storage").then(
-                            argument("id", IdentifierArgumentType).then(
-                                argument("path", NbtPathArgumentType).redirect_with_modifier(
-                                    Redirection::Root,
-                                    RedirectModifier::Custom(Arc::new(
-                                        execute_unless_data_storage_modifier,
-                                    )),
+                        )
+                        .then(
+                            literal("storage").then(
+                                argument("id", IdentifierArgumentType).then(
+                                    argument("path", NbtPathArgumentType)
+                                        .fork(
+                                            Redirection::Root,
+                                            RedirectModifier::Custom(Arc::new(
+                                                execute_unless_data_storage_modifier,
+                                            )),
+                                        )
+                                        .executes(ConditionalExecutor(
+                                            execute_unless_data_storage_modifier,
+                                        )),
                                 ),
                             ),
-                        )),
+                        ),
                 )
                 .then(
-                    literal("stopwatch").then(argument("id", IdentifierArgumentType).then(
-                        argument("range", FloatRangeArgumentType).redirect_with_modifier(
-                            Redirection::Root,
-                            RedirectModifier::Custom(Arc::new(execute_unless_stopwatch_modifier)),
+                    literal("stopwatch").then(
+                        argument("id", IdentifierArgumentType).then(
+                            argument("range", FloatRangeArgumentType)
+                                .fork(
+                                    Redirection::Root,
+                                    RedirectModifier::Custom(Arc::new(
+                                        execute_unless_stopwatch_modifier,
+                                    )),
+                                )
+                                .executes(ConditionalExecutor(execute_unless_stopwatch_modifier)),
                         ),
-                    )),
+                    ),
                 ),
         );
 
@@ -1635,6 +1756,29 @@ mod tests {
                     assert_eq!(result.reader.remaining_length(), 0, "{input}");
                     assert!(result.context.build(&input).command.is_some(), "{input}");
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn conditions_are_complete_commands_without_run() {
+        let mut dispatcher = CommandDispatcher::new();
+        register(&mut dispatcher, &PermissionRegistry::default());
+        let source = Arc::new(CommandSource::dummy());
+        for condition in ["if", "unless"] {
+            for test in [
+                "entity @e[type=item]",
+                "block 0 64 0 minecraft:stone",
+                "loaded 0 64 0",
+                "dimension minecraft:overworld",
+                "blocks 0 64 0 1 65 1 5 64 5 all",
+                "blocks 0 64 0 1 65 1 5 64 5 masked",
+            ] {
+                let input = format!("execute {condition} {test}");
+                let result = dispatcher.parse_input(&input, &source);
+                assert!(result.errors.is_empty(), "{input}: {:?}", result.errors);
+                assert_eq!(result.reader.remaining_length(), 0, "{input}");
+                assert!(result.context.build(&input).command.is_some(), "{input}");
             }
         }
     }
