@@ -20,7 +20,9 @@ use crate::net::bedrock::{
 use crate::net::java::JavaClient;
 use crate::net::java::pending::PendingConnection;
 use crate::net::{ClientPlatform, DisconnectReason, PacketHandlerResult, PacketRateLimiter};
-use crate::net::{lan_broadcast::LANBroadcast, management::ManagementServer, query};
+use crate::net::{
+    lan_broadcast::LANBroadcast, management::ManagementServer, query, rcon::RCONServer,
+};
 use crate::plugin::loader::PluginLoader;
 use crate::plugin::server::server_command::ServerCommandEvent;
 use crate::server::{Server, ticker::Ticker};
@@ -266,6 +268,14 @@ impl PumpkinServer {
 
         #[cfg(target_family = "unix")]
         adjust_file_descriptor_limit();
+
+        let rcon = server.advanced_config.networking.rcon.clone();
+        if rcon.enabled {
+            let rcon_server = server.clone();
+            server.spawn_task(async move {
+                RCONServer::run(&rcon, rcon_server).await;
+            });
+        }
 
         let management = server.advanced_config.networking.management.clone();
 

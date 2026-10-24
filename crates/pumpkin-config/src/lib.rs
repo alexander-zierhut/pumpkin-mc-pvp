@@ -38,6 +38,7 @@ pub use networking::java::JavaConfig;
 pub use networking::lan_broadcast::LANBroadcastConfig;
 pub use networking::management::ManagementServerConfig;
 pub use networking::packet_limiter::PacketLimiterConfig;
+pub use networking::rcon::RCONConfig;
 pub use plugins::{PluginOverride, PluginsConfig};
 pub use pvp::PVPConfig;
 pub use server_links::ServerLinksConfig;
