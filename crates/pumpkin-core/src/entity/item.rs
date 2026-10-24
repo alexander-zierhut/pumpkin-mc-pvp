@@ -47,6 +47,8 @@ pub struct ItemEntity {
     never_despawn: AtomicBool,
     never_pickup: AtomicBool,
     merge_reserved: AtomicBool,
+    /// Never merges with other item entities (for plugins, e.g. resource spawners whose drops stay one entity each).
+    merge_disabled: AtomicBool,
 }
 
 struct ItemMergeReservation<'a> {
@@ -118,6 +120,7 @@ impl ItemEntity {
             never_despawn: AtomicBool::new(false),
             never_pickup: AtomicBool::new(false),
             merge_reserved: AtomicBool::new(false),
+            merge_disabled: AtomicBool::new(false),
         }
     }
 
@@ -141,6 +144,7 @@ impl ItemEntity {
             never_despawn: AtomicBool::new(false),
             never_pickup: AtomicBool::new(false),
             merge_reserved: AtomicBool::new(false),
+            merge_disabled: AtomicBool::new(false),
         }
     }
 
@@ -157,6 +161,7 @@ impl ItemEntity {
             never_despawn: AtomicBool::new(false),
             never_pickup: AtomicBool::new(false),
             merge_reserved: AtomicBool::new(false),
+            merge_disabled: AtomicBool::new(false),
         }
     }
 
@@ -203,9 +208,15 @@ impl ItemEntity {
             && stack.are_items_and_components_equal(other)
     }
 
+    /// Keeps this item entity from merging with others (it still despawns and can be picked up).
+    pub fn set_merge_disabled(&self, disabled: bool) {
+        self.merge_disabled.store(disabled, Ordering::Relaxed);
+    }
+
     /// Vanilla `ItemEntity.isMergable`.
     fn is_mergeable(&self) -> bool {
         if self.entity.removed.load(Ordering::SeqCst)
+            || self.merge_disabled.load(Ordering::Relaxed)
             || self.never_pickup.load(Ordering::Relaxed)
             || self.never_despawn.load(Ordering::Relaxed)
             || self.item_age.load(Ordering::Relaxed) >= LIFETIME
