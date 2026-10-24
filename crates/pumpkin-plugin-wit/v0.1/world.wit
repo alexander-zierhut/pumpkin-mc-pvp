@@ -902,7 +902,8 @@ interface %world {
 
         /// Drops an item stack as an item entity. Without `velocity` it gets the small random
         /// spread of a block drop; `pickup-delay` is in ticks (vanilla block drops use 10).
-        drop-item: func(pos: position, item: item-stack, velocity: option<position>, pickup-delay: u32) -> entity;
+        /// With `can-merge` false the entity never merges with other item entities.
+        drop-item: func(pos: position, item: item-stack, velocity: option<position>, pickup-delay: u32, can-merge: bool) -> entity;
 
         /// Returns the entity with this network id in this world, players included.
         get-entity-by-id: func(id: s32) -> option<entity>;

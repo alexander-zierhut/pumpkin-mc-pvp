@@ -1242,6 +1242,7 @@ impl pumpkin::plugin::world::HostWorldWithStore<PluginHostState> for HasSelf<Plu
         item: Resource<crate::pumpkin::plugin::item_stack::ItemStack>,
         velocity: Option<WitPosition>,
         pickup_delay: u32,
+        can_merge: bool,
     ) -> wasmtime::Result<Resource<pumpkin::plugin::world::Entity>> {
         let (world, plugin) = world_and_plugin(host.get(), &world)?;
         let item_stack = host.get().take(item)?.lock().await.clone();
@@ -1262,13 +1263,14 @@ impl pumpkin::plugin::world::HostWorldWithStore<PluginHostState> for HasSelf<Plu
             pos,
             &pumpkin_data::entity::EntityType::ITEM,
         );
-        let item_entity: Arc<dyn pumpkin_core::entity::EntityBase> =
-            Arc::new(pumpkin_core::entity::item::ItemEntity::new_with_velocity(
-                entity,
-                item_stack,
-                velocity,
-                pickup_delay.min(u32::from(u8::MAX)) as u8,
-            ));
+        let item = pumpkin_core::entity::item::ItemEntity::new_with_velocity(
+            entity,
+            item_stack,
+            velocity,
+            pickup_delay.min(u32::from(u8::MAX)) as u8,
+        );
+        item.set_merge_disabled(!can_merge);
+        let item_entity: Arc<dyn pumpkin_core::entity::EntityBase> = Arc::new(item);
         let spawned = Arc::clone(&item_entity);
         plugin
             .store
