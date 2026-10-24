@@ -190,11 +190,17 @@ impl RCONClient {
                         self.send(ClientboundPacket::Output, packet.get_id(), "")
                             .await?;
                     } else {
-                        for line in &output_lines {
-                            if config.logging.commands {
+                        if config.logging.commands {
+                            for line in &output_lines {
                                 info!("RCON ({}): {}", self.address, line);
                             }
-                            self.send(ClientboundPacket::Output, packet.get_id(), line)
+                        }
+                        // Vanilla `RconClient`: the whole output is one response (lines joined with '\n'),
+                        // split only into 4096-byte fragments. One packet per line made clients that read one
+                        // response per command take the rest as the answer to their next command.
+                        let response = output_lines.join("\n");
+                        for chunk in split_response(&response, MAX_RESPONSE_FRAGMENT) {
+                            self.send(ClientboundPacket::Output, packet.get_id(), chunk)
                                 .await?;
                         }
                     }
@@ -239,5 +245,47 @@ impl RCONClient {
 
     fn receive_packet(&mut self) -> Result<Option<Packet>, PacketError> {
         Packet::deserialize(&mut self.incoming)
+    }
+}
+
+/// Vanilla `RconClient.sendCmdResponse` fragment size.
+const MAX_RESPONSE_FRAGMENT: usize = 4096;
+
+/// Splits a response into fragments of at most `max` bytes, on UTF-8 character boundaries.
+fn split_response(response: &str, max: usize) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut rest = response;
+    while rest.len() > max {
+        let mut cut = max;
+        while !rest.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let (head, tail) = rest.split_at(cut);
+        parts.push(head);
+        rest = tail;
+    }
+    parts.push(rest);
+    parts
+}
+
+#[cfg(test)]
+mod tests {
+    use super::split_response;
+
+    #[test]
+    fn short_output_is_one_response() {
+        assert_eq!(
+            split_response("Verfügbare Arenen:\nRush 1", 4096),
+            vec!["Verfügbare Arenen:\nRush 1"]
+        );
+    }
+
+    #[test]
+    fn long_output_is_split_on_char_boundaries() {
+        let text = "ü".repeat(3000); // 6000 bytes
+        let parts = split_response(&text, 4096);
+        assert_eq!(parts.len(), 2);
+        assert!(parts.iter().all(|p| p.len() <= 4096));
+        assert_eq!(parts.concat(), text);
     }
 }
