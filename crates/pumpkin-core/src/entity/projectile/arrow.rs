@@ -928,8 +928,10 @@ impl EntityBase for ArrowEntity {
                     None,
                 );
 
+                let legacy = crate::entity::legacy_combat::config(&world).is_some();
                 if let Some(living) = target.get_living_entity() {
-                    if punch > 0 {
+                    // 1.8 `EntityArrow.onUpdate` only pushes (Punch) after a successful hit
+                    if punch > 0 && (damage_succeeded || !legacy) {
                         let norm = Vector3::new(velocity.x, 0.0, velocity.z).normalize();
                         let push_scale = f64::from(punch) * 0.6;
                         target.get_entity().velocity.store(
@@ -939,6 +941,19 @@ impl EntityBase for ArrowEntity {
                                 norm.z * push_scale,
                             )),
                         );
+                        target
+                            .get_entity()
+                            .velocity_dirty
+                            .store(true, Ordering::SeqCst);
+                    }
+                    if legacy
+                        && target.get_player().is_some()
+                        && target
+                            .get_entity()
+                            .velocity_dirty
+                            .swap(false, Ordering::SeqCst)
+                    {
+                        target.get_entity().send_velocity();
                     }
 
                     // Play hit sound

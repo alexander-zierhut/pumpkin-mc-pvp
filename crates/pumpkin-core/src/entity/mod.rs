@@ -84,6 +84,7 @@ pub mod hunger;
 pub mod interaction;
 pub mod item;
 pub mod item_steerable;
+pub mod legacy_combat;
 pub mod lightning;
 pub mod living;
 pub mod marker;

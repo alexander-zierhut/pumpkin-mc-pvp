@@ -40,7 +40,7 @@ pub use networking::management::ManagementServerConfig;
 pub use networking::packet_limiter::PacketLimiterConfig;
 pub use networking::rcon::RCONConfig;
 pub use plugins::{PluginOverride, PluginsConfig};
-pub use pvp::PVPConfig;
+pub use pvp::{LegacyCombatConfig, PVPConfig};
 pub use server_links::ServerLinksConfig;
 pub use telemetry::TelemetryConfig;
 
