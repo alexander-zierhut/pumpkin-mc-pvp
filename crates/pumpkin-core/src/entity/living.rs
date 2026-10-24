@@ -226,6 +226,33 @@ fn is_allowed_by_team_rules(
 }
 
 impl LivingEntity {
+    /// Vanilla `Entity.rideTick` / `positionRider` for entities riding a player (players are
+    /// client-authoritative and never position their passengers; minecarts do it themselves). The rider
+    /// sits on the player's passenger attachment point (top of the hitbox) and has no motion of its own.
+    /// Returns whether this entity rides a player.
+    fn ride_player_vehicle(&self) -> bool {
+        let vehicle = self
+            .entity
+            .vehicle
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let Some(vehicle) = vehicle else {
+            return false;
+        };
+        let vehicle = vehicle.get_entity();
+        if vehicle.entity_type != &EntityType::PLAYER {
+            return false;
+        }
+        let pos = vehicle.pos.load();
+        let height = f64::from(vehicle.entity_dimension.load().height);
+        self.entity
+            .set_pos(Vector3::new(pos.x, pos.y + height, pos.z));
+        self.entity.velocity.store(Vector3::new(0.0, 0.0, 0.0));
+        self.fall_distance.store(0.0);
+        true
+    }
+
     pub fn is_dead_or_dying(&self) -> bool {
         self.health.load() <= 0.0 || self.dead.load(Relaxed)
     }
@@ -3610,7 +3637,9 @@ impl EntityBase for LivingEntity {
         let is_alive = !self.dead.load(Relaxed) && self.health.load() > 0.0;
         let in_death_animation = self.health.load() <= 0.0 && self.death_time.load(Relaxed) < 20;
         let is_player = self.entity.entity_type == &EntityType::PLAYER;
-        if (is_alive || in_death_animation) && !is_player {
+        if !is_player && self.ride_player_vehicle() {
+            // vanilla `rideTick`: a rider follows its vehicle instead of moving on its own
+        } else if (is_alive || in_death_animation) && !is_player {
             self.tick_movement(caller);
             // Vanilla-like order: freeze logic runs after movement/collisions.
             self.entity.tick_frozen(caller);
