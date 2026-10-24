@@ -191,6 +191,9 @@ interface server {
 
         execute-command: func(command: string, sender: command-sender);
 
+        /// Runs a command with console permissions and returns the lines it printed.
+        run-command: func(command: string) -> list<string>;
+
         /// Creates or loads a world by its name and dimension.
         /// If a world with the given name already exists, it will be returned.
         create-world: func(name: string, dimension: dimension) -> %world;
