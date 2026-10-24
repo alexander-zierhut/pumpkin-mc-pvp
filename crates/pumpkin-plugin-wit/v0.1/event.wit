@@ -476,7 +476,10 @@ interface event {
     }
 
     record entity-explode-event-data {
+        /// The exploding entity (0 without a source entity); it is usually removed already.
         entity-id: s32,
+        /// Name of the world the explosion happens in.
+        world-name: string,
         position: position,
         yield-rate: f32,
         cancelled: bool

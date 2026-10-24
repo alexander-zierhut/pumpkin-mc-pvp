@@ -376,6 +376,7 @@ impl ToFromWasmEvent
     fn to_wasm_event(&self, _state: &mut PluginHostState) -> Event {
         Event::EntityExplodeEvent(EntityExplodeEventData {
             entity_id: self.entity_id,
+            world_name: self.world.clone(),
             position: to_wasm_position(self.position),
             yield_rate: self.yield_rate,
             cancelled: self.cancelled,
@@ -386,6 +387,7 @@ impl ToFromWasmEvent
         match event {
             Event::EntityExplodeEvent(data) => Self {
                 entity_id: data.entity_id,
+                world: data.world_name,
                 position: pumpkin_util::math::vector3::Vector3::new(
                     data.position.0,
                     data.position.1,
