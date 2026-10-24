@@ -912,6 +912,14 @@ interface %world {
         /// Returns the entity with this network id in this world, players included.
         get-entity-by-id: func(id: s32) -> option<entity>;
 
+        /// Keeps the chunks covering the block columns between the two corners loaded (like `/forceload`),
+        /// or releases them. Block reads in unloaded chunks return air and writes are lost, so a
+        /// plugin that edits an area without players nearby forces it first. Loading is asynchronous.
+        set-chunks-forced: func(corner-a: block-pos, corner-b: block-pos, forced: bool);
+
+        /// Whether the chunk at these chunk coordinates is loaded.
+        is-chunk-loaded: func(chunk-x: s32, chunk-z: s32) -> bool;
+
         /// Returns a list of all entities in this world.
         get-entities: func() -> list<entity>;
 
