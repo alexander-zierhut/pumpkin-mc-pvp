@@ -13,10 +13,9 @@ use pumpkin_data::data_component_impl::PotionDurationScaleImpl;
 use pumpkin_data::entity::EntityType;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
-use pumpkin_data::particle::Particle;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_protocol::IdOr;
-use pumpkin_protocol::java::client::play::{CEntityVelocity, CSoundEffect, Metadata};
+use pumpkin_protocol::java::client::play::{CSoundEffect, Metadata};
 use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
@@ -77,6 +76,13 @@ impl ArrowEntity {
     const AIR_INERTIA: f64 = 0.99;
     const GRAVITY: f64 = 0.05;
     const DESPAWN_TIME: u32 = 1200;
+
+    /// Motion for the next tick: inertia first, then gravity (vanilla order).
+    fn next_motion(velocity: Vector3<f64>, inertia: f64) -> Vector3<f64> {
+        let mut next = velocity.multiply(inertia, inertia, inertia);
+        next.y -= Self::GRAVITY;
+        next
+    }
 
     pub fn new(entity: Entity, owner_id: Option<i32>) -> Self {
         let item_stack = ItemStack::new(1, Self::default_item(entity.entity_type));
@@ -620,22 +626,16 @@ impl EntityBase for ArrowEntity {
             return;
         }
 
-        // Arrow is flying
+        // Arrow is flying. Vanilla order (1.8 `EntityArrow.onUpdate`, modern `AbstractArrow.tick`): ray trace and
+        // move with the current motion, then apply inertia, then gravity. Applying them before the move made the
+        // server arrow run one tick behind the arrow the client simulates.
         let start_pos = entity.pos.load();
-        let mut velocity = entity.velocity.load();
-
-        // Apply gravity
-        velocity.y -= Self::GRAVITY;
-
-        // Apply inertia (air resistance or water drag)
+        let velocity = entity.velocity.load();
         let inertia = if in_water {
             Self::WATER_INERTIA
         } else {
             Self::AIR_INERTIA
         };
-        velocity = velocity.multiply(inertia, inertia, inertia);
-
-        entity.velocity.store(velocity);
 
         // Update rotation based on velocity
         let len = velocity.horizontal_length();
@@ -648,60 +648,8 @@ impl EntityBase for ArrowEntity {
         let new_pos = start_pos.add(&velocity);
         entity.set_pos(new_pos);
 
-        // Spawn particles while arrow is flying
-        if in_water {
-            for i in 0..4 {
-                let factor = 0.25 * f64::from(i);
-                world.spawn_particle(
-                    Vector3::new(
-                        new_pos.x - velocity.x * factor,
-                        new_pos.y - velocity.y * factor,
-                        new_pos.z - velocity.z * factor,
-                    ),
-                    Vector3::new(velocity.x as f32, velocity.y as f32, velocity.z as f32),
-                    0.0,
-                    1,
-                    Particle::Bubble,
-                );
-            }
-        }
-
-        if is_on_fire {
-            world.spawn_particle(
-                entity.pos.load(),
-                Vector3::new(0.0f32, 0.0f32, 0.0f32),
-                0.0,
-                1,
-                Particle::Flame,
-            );
-        }
-
-        if self.is_critical.load(Ordering::Relaxed) {
-            for i in 0..4 {
-                let factor = f64::from(i) / 4.0;
-                world.spawn_particle(
-                    Vector3::new(
-                        start_pos.x + velocity.x * factor,
-                        start_pos.y + velocity.y * factor,
-                        start_pos.z + velocity.z * factor,
-                    ),
-                    Vector3::new(
-                        -velocity.x as f32,
-                        (-velocity.y + 0.2) as f32,
-                        -velocity.z as f32,
-                    ),
-                    0.0,
-                    1,
-                    Particle::Crit,
-                );
-            }
-        }
-
-        // Broadcast velocity update
-        let packet = CEntityVelocity::new(entity.entity_id.into(), velocity);
-
-        let chunk_pos = entity.chunk_pos.load();
-        world.broadcast_to_chunk(chunk_pos, &packet);
+        // Crit, bubble and flame trails are drawn by the client itself (`ServerLevel.addParticle` is a no-op), and
+        // motion reaches the client through the entity tracker (`ServerEntity.sendChanges`), not every tick.
 
         // Check for collisions using raycasting
         let search_box = BoundingBox::new(
@@ -749,7 +697,7 @@ impl EntityBase for ArrowEntity {
         }
 
         // Entity collisions
-        let candidates = world.get_entities_at_box(&search_box);
+        let candidates = world.get_all_at_box(&search_box);
         for cand in candidates {
             if self.should_skip_collision(entity, &cand) {
                 continue;
@@ -769,14 +717,13 @@ impl EntityBase for ArrowEntity {
             }
         }
 
-        // Handle hit
+        // Handle hit (damage uses the motion of this tick, before inertia and gravity)
         if let Some(h) = hit {
             match h {
                 ProjectileHit::Block { .. } => {
-                    if self.has_hit.swap(true, Ordering::SeqCst) {
-                        return;
+                    if !self.has_hit.swap(true, Ordering::SeqCst) {
+                        caller.on_hit(h);
                     }
-                    caller.on_hit(h);
                 }
                 ProjectileHit::Entity { .. } => {
                     let pierce = self.pierce_level.load(Ordering::Relaxed);
@@ -785,12 +732,18 @@ impl EntityBase for ArrowEntity {
                         .read()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .len();
-                    if pierced_len >= pierce as usize && self.has_hit.swap(true, Ordering::SeqCst) {
-                        return;
+                    if pierced_len < pierce as usize || !self.has_hit.swap(true, Ordering::SeqCst) {
+                        caller.on_hit(h);
                     }
-                    caller.on_hit(h);
                 }
             }
+        }
+
+        // Inertia, then gravity (a hit may have stopped the arrow or reversed its motion)
+        if !self.in_ground.load(Ordering::Relaxed) {
+            entity
+                .velocity
+                .store(Self::next_motion(entity.velocity.load(), inertia));
         }
     }
 
@@ -1060,6 +1013,11 @@ impl ArrowEntity {
             return true;
         }
 
+        // Spectators are never hit (vanilla `EntitySelector.NO_SPECTATORS`)
+        if other.is_spectator() {
+            return true;
+        }
+
         // Skip owner for initial frames (5 ticks)
         if Some(other_ent.entity_id) == self.owner_id
             && self_ent.tick_count.load(Ordering::Relaxed) < 5
@@ -1128,6 +1086,7 @@ mod tests {
     use pumpkin_data::entity::EntityType;
     use pumpkin_data::item::Item;
     use pumpkin_data::item_stack::ItemStack;
+    use pumpkin_util::math::vector3::Vector3;
 
     fn tipped_payload(count: u8) -> ItemStack {
         let mut tipped = ItemStack::new(32, &Item::TIPPED_ARROW);
@@ -1227,5 +1186,24 @@ mod tests {
         let power_5 = base_damage + 5.0 * 0.5 + 0.5;
         assert_eq!(power_1, 3.0);
         assert_eq!(power_5, 5.0);
+    }
+
+    /// The flight of a level full-draw shot (3 blocks/tick) as 1.8 computes it: move, then *0.99, then -0.05.
+    #[test]
+    fn flight_matches_1_8_order() {
+        let mut pos = Vector3::new(0.0, 0.0, 0.0);
+        let mut vel = Vector3::new(3.0, 0.0, 0.0);
+        let mut path = Vec::new();
+        for _ in 0..3 {
+            pos = pos.add(&vel);
+            vel = ArrowEntity::next_motion(vel, ArrowEntity::AIR_INERTIA);
+            path.push(pos);
+        }
+        // tick 1 moves the full launch motion and does not drop yet
+        assert!((path[0].x - 3.0).abs() < 1e-9 && path[0].y.abs() < 1e-9);
+        // tick 2: 3 * 0.99 forward, -0.05 down
+        assert!((path[1].x - 5.97).abs() < 1e-9 && (path[1].y + 0.05).abs() < 1e-9);
+        // tick 3: 5.97 + 2.9403, -0.05 - (0.05 * 0.99 + 0.05)
+        assert!((path[2].x - 8.9103).abs() < 1e-9 && (path[2].y + 0.1495).abs() < 1e-9);
     }
 }
