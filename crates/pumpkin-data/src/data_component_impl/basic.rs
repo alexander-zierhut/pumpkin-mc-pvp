@@ -110,16 +110,31 @@ impl DataComponentImpl for UnbreakableImpl {
 pub struct CustomNameImpl {
     pub name: TextComponent,
 }
+/// A text component as NBT (vanilla `ComponentSerialization.CODEC`: a plain string or a styled compound).
+fn text_to_nbt(text: &TextComponent) -> NbtTag {
+    text.0
+        .clone()
+        .to_nbt_tag_for_version(&pumpkin_util::version::JavaMinecraftVersion::V_26_2)
+}
+
+/// Reads a text component from NBT; `None` for tags that are no text component.
+fn text_from_nbt(tag: &NbtTag) -> Option<TextComponent> {
+    match tag {
+        NbtTag::String(_) | NbtTag::Compound(_) | NbtTag::List(_) => {
+            Some(TextComponent::from_nbt(tag))
+        }
+        _ => None,
+    }
+}
+
 impl CustomNameImpl {
     pub fn read_data(data: &NbtTag) -> Option<Self> {
-        data.extract_string().map(|name| Self {
-            name: TextComponent::text(name.to_string()),
-        })
+        text_from_nbt(data).map(|name| Self { name })
     }
 }
 impl DataComponentImpl for CustomNameImpl {
     fn write_data(&self) -> NbtTag {
-        NbtTag::String(self.name.clone().get_text().into())
+        text_to_nbt(&self.name)
     }
     fn get_hash(&self) -> i32 {
         get_str_hash(self.name.clone().get_text().as_str()) as i32
@@ -190,22 +205,13 @@ impl LoreImpl {
         };
 
         Some(Self {
-            lines: lines
-                .iter()
-                .filter_map(NbtTag::extract_string)
-                .map(|line| TextComponent::text(line.to_owned()))
-                .collect(),
+            lines: lines.iter().filter_map(text_from_nbt).collect(),
         })
     }
 }
 impl DataComponentImpl for LoreImpl {
     fn write_data(&self) -> NbtTag {
-        NbtTag::List(
-            self.lines
-                .iter()
-                .map(|line| NbtTag::String(line.clone().get_text().into_boxed_str()))
-                .collect(),
-        )
+        NbtTag::List(self.lines.iter().map(text_to_nbt).collect())
     }
     default_impl!(Lore);
 }
