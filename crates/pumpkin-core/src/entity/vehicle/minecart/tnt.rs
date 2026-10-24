@@ -96,9 +96,14 @@ impl TntMinecart {
         let primed = self.fuse.load(Ordering::Relaxed) > -1;
         entity.remove();
         if primed {
-            world.explode_tnt_minecart(pos, power);
+            world.explode_tnt_minecart(entity.entity_id, pos, power);
         } else {
-            world.explode(pos, power, crate::world::ExplosionInteraction::Tnt);
+            world.explode_from(
+                entity.entity_id,
+                pos,
+                power,
+                crate::world::ExplosionInteraction::Tnt,
+            );
         }
     }
 

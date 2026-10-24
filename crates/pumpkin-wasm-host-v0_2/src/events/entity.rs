@@ -386,6 +386,8 @@ impl ToFromWasmEvent
         match event {
             Event::EntityExplodeEvent(data) => Self {
                 entity_id: data.entity_id,
+                // v0.2 events carry no world name, see apply_wasm_event
+                world: String::new(),
                 position: pumpkin_util::math::vector3::Vector3::new(
                     data.position.0,
                     data.position.1,
@@ -396,6 +398,12 @@ impl ToFromWasmEvent
             },
             _ => panic!("unexpected event type"),
         }
+    }
+
+    fn apply_wasm_event(&mut self, event: Event, state: &mut PluginHostState) {
+        let world = std::mem::take(&mut self.world);
+        *self = Self::from_wasm_event(event, state);
+        self.world = world;
     }
 }
 

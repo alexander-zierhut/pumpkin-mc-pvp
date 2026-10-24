@@ -3864,6 +3864,18 @@ impl World {
         self.explode_with_calculator(position, power, interaction, None);
     }
 
+    /// An explosion caused by an entity (TNT, creeper, ...): `EntityExplodeEvent` carries its id.
+    pub fn explode_from(
+        self: &Arc<Self>,
+        source_id: i32,
+        position: Vector3<f64>,
+        power: f32,
+        interaction: ExplosionInteraction,
+    ) {
+        let explosion = Explosion::new(power, position, self.get_block_interaction(interaction));
+        self.run_explosion(&explosion, source_id, position, power);
+    }
+
     pub fn explode_with_calculator(
         self: &Arc<Self>,
         position: Vector3<f64>,
@@ -3876,13 +3888,18 @@ impl World {
         if let Some(calc) = damage_calculator {
             explosion = explosion.with_damage_calculator(calc);
         }
-        self.run_explosion(&explosion, position, power);
+        self.run_explosion(&explosion, 0, position, power);
     }
 
-    pub fn explode_tnt_minecart(self: &Arc<Self>, position: Vector3<f64>, power: f32) {
+    pub fn explode_tnt_minecart(
+        self: &Arc<Self>,
+        source_id: i32,
+        position: Vector3<f64>,
+        power: f32,
+    ) {
         let block_interaction = self.get_block_interaction(ExplosionInteraction::Tnt);
         let explosion = Explosion::new(power, position, block_interaction).preserving_rails();
-        self.run_explosion(&explosion, position, power);
+        self.run_explosion(&explosion, source_id, position, power);
     }
 
     #[must_use]
@@ -3916,9 +3933,18 @@ impl World {
         }
     }
 
-    fn run_explosion(self: &Arc<Self>, explosion: &Explosion, position: Vector3<f64>, power: f32) {
+    fn run_explosion(
+        self: &Arc<Self>,
+        explosion: &Explosion,
+        source_id: i32,
+        position: Vector3<f64>,
+        power: f32,
+    ) {
         let mut event = crate::plugin::api::events::entity::entity_explode::EntityExplodeEvent::new(
-            0, position, power,
+            source_id,
+            self.get_world_name().to_string(),
+            position,
+            power,
         );
         if let Some(server) = self.server.upgrade() {
             server.plugin_manager.fire_blocking(&server, &mut event);
