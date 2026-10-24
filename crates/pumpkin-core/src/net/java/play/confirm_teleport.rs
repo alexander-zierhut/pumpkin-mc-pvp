@@ -30,10 +30,9 @@ impl JavaClient {
         };
 
         match result {
-            TeleportResult::Success => {}
-            TeleportResult::WrongId => {
-                self.try_kick(&TextComponent::text("Wrong teleport id"));
-            }
+            // Vanilla `handleAcceptTeleportPacket` ignores ids other than the latest: the client
+            // confirms each teleport, so a second teleport sent before the first confirm is normal.
+            TeleportResult::Success | TeleportResult::WrongId => {}
             TeleportResult::NotTeleporting => {
                 self.try_kick(&TextComponent::text(
                     "Send Teleport confirm, but we did not teleport",
