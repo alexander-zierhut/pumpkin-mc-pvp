@@ -61,6 +61,10 @@ impl ItemBehaviour for EnderPearlItem {
         pearl
             .thrown
             .set_velocity_from(pitch, yaw, ROLL, POWER, DIVERGENCE);
+        pearl
+            .thrown
+            .entity
+            .add_velocity(player.projectile_inherited_motion());
         world.spawn_entity(Arc::new(pearl));
 
         stack.decrement_unless_creative(player.gamemode.load(), 1);

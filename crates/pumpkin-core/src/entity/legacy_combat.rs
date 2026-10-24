@@ -335,6 +335,31 @@ impl Player {
         motion_from_movement(delta, on_ground)
     }
 
+    /// Movement a projectile thrown or shot by this player inherits: vanilla `Projectile.shootFromRotation` adds the
+    /// shooter's known movement (`ServerPlayer.getKnownMovement`, the last client position delta), without the
+    /// vertical part on the ground. 1.8 projectiles inherit nothing, so legacy combat returns zero.
+    pub fn projectile_inherited_motion(&self) -> Vector3<f64> {
+        let entity = &self.living_entity.entity;
+        if config(&entity.world.load()).is_some() {
+            return Vector3::new(0.0, 0.0, 0.0);
+        }
+        let (delta, at_tick) = self.legacy_movement.load();
+        if entity
+            .tick_count
+            .load(Ordering::Relaxed)
+            .saturating_sub(at_tick)
+            > 1
+        {
+            return Vector3::new(0.0, 0.0, 0.0);
+        }
+        let y = if entity.on_ground.load(Ordering::Relaxed) {
+            0.0
+        } else {
+            delta.y
+        };
+        Vector3::new(delta.x, y, delta.z)
+    }
+
     /// Records the movement of one client position packet for [`Self::legacy_motion`].
     pub fn record_legacy_movement(&self, delta: Vector3<f64>) {
         let tick = self.living_entity.entity.tick_count.load(Ordering::Relaxed);

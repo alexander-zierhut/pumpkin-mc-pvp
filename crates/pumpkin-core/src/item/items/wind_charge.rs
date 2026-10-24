@@ -60,6 +60,9 @@ impl ItemBehaviour for WindChargeItem {
 
         let wind_charge = ThrownItemEntity::new(entity, player.get_entity(), WIND_CHARGE_GRAVITY);
         wind_charge.set_velocity_from(pitch, yaw, 0.0, POWER, 1.0);
+        wind_charge
+            .entity
+            .add_velocity(player.projectile_inherited_motion());
 
         world.spawn_entity(Arc::new(WindChargeEntity::new_normal(wind_charge)));
 

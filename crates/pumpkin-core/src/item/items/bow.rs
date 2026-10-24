@@ -207,6 +207,7 @@ impl BowItem {
                 uncertainty,
                 is_crit,
                 is_creative,
+                player.projectile_inherited_motion(),
             );
         }
 
