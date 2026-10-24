@@ -489,6 +489,10 @@ pub struct Player {
     pub client_loaded: AtomicBool,
     /// Whether the client has been loaded at least once (it is in the play state; set by `set_client_loaded`).
     pub client_loaded_once: AtomicBool,
+    /// Whether this Java client got the tab list of the players already online. Until then the entity
+    /// tracker does not spawn entities for it: a vanilla client drops a player entity whose `PlayerInfo`
+    /// it does not know yet ("Server attempted to add player prior to sending player info").
+    pub tab_list_sent: AtomicBool,
     pub bedrock_spawned: AtomicBool,
     /// Whether the player is frozen in place (movement locked for dialogues/cutscenes).
     pub is_movement_locked: AtomicBool,
@@ -730,6 +734,7 @@ impl Player {
             ClientPlatform::Bedrock(_) => true,
         };
         let initially_loaded = !supports_player_loaded;
+        let is_java = matches!(client.as_ref(), ClientPlatform::Java(_));
 
         Self {
             living_entity,
@@ -785,6 +790,7 @@ impl Player {
             legacy_movement: AtomicCell::new((Vector3::new(0.0, 0.0, 0.0), i32::MIN / 2)),
             client_loaded: AtomicBool::new(initially_loaded),
             client_loaded_once: AtomicBool::new(initially_loaded),
+            tab_list_sent: AtomicBool::new(!is_java),
             bedrock_spawned: AtomicBool::new(false),
             client_loaded_timeout: AtomicU32::new(if initially_loaded { 0 } else { 60 }),
             chat_spam_tick_count: AtomicU32::new(0),
