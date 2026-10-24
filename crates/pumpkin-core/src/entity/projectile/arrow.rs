@@ -966,8 +966,8 @@ impl EntityBase for ArrowEntity {
     }
 
     fn on_player_collision(&self, player: &Arc<Player>) {
-        // Only allow picking up grounded arrows
-        if !self.in_ground.load(Ordering::Relaxed) {
+        // Only grounded arrows that stopped shaking (vanilla `AbstractArrow.playerTouch`: `shakeTime <= 0`, 7 ticks)
+        if !self.in_ground.load(Ordering::Relaxed) || self.shake_time.load(Ordering::Relaxed) > 0 {
             return;
         }
 
