@@ -132,6 +132,7 @@ impl ProjectileWeaponItem {
         uncertainty: f32,
         is_crit: bool,
         is_creative: bool,
+        shooter_motion: pumpkin_util::math::vector3::Vector3<f64>,
     ) {
         if projectiles.is_empty() {
             return;
@@ -189,6 +190,7 @@ impl ProjectileWeaponItem {
                     is_creative,
                 );
                 arrow.set_velocity_from_rotation(pitch, yaw + angle, 0.0, power, uncertainty);
+                arrow.get_entity().add_velocity(shooter_motion);
                 let arrow_arc: Arc<dyn EntityBase> = Arc::new(arrow);
                 world.spawn_entity(arrow_arc);
             }
