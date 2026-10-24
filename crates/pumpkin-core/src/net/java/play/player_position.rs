@@ -1,5 +1,6 @@
 #[allow(clippy::wildcard_imports)]
 use super::*;
+use crate::world::entity_tracker::encode_delta;
 
 impl JavaClient {
     const fn clamp_horizontal(pos: f64) -> f64 {
@@ -10,44 +11,57 @@ impl JavaClient {
         pos.clamp(-2.0E7, 2.0E7)
     }
 
-    /// Returns whether syncing the position was needed
-    fn sync_position(
-        player: &Arc<Player>,
+    /// Sends a move from the player's own movement packet to the players tracking it: a relative
+    /// move (vanilla `VecDeltaCodec` deltas), or an absolute sync from 8 blocks on.
+    fn broadcast_move(
         world: &World,
         entity: &Entity,
         pos: Vector3<f64>,
         last_pos: Vector3<f64>,
         on_ground: bool,
-    ) -> bool {
-        let delta = Vector3::new(pos.x - last_pos.x, pos.y - last_pos.y, pos.z - last_pos.z);
-        let entity_id = player.entity_id();
-
-        // Teleport when more than 8 blocks (-8..=7.999755859375)
-        if delta.length_squared() < 64.0 {
-            return false;
-        }
-        // Sync position with tracking players only.
-        world.send_to_tracking_players_editioned(
-            entity,
-            &CEntityPositionSync::new(
-                entity_id.into(),
-                pos,
-                Vector3::new(0.0, 0.0, 0.0),
-                entity.yaw.load(),
-                entity.pitch.load(),
-                on_ground,
+        rotation: Option<(u8, u8)>,
+    ) {
+        let entity_id = VarInt(entity.entity_id);
+        let delta = if (pos - last_pos).length_squared() < 64.0 {
+            encode_delta(pos, last_pos)
+        } else {
+            None
+        };
+        let Some(delta) = delta else {
+            world.send_to_tracking_players_editioned(
+                entity,
+                &CEntityPositionSync::new(
+                    entity_id,
+                    pos,
+                    Vector3::new(0.0, 0.0, 0.0),
+                    entity.yaw.load(),
+                    entity.pitch.load(),
+                    on_ground,
+                ),
+                &bedrock_move_player_packet(entity, pos, CMovePlayer::MODE_TELEPORT, on_ground),
+            );
+            // Bedrock ignores head yaw on teleport -> follow-up normal move re-asserts.
+            world.send_to_tracking_players_bedrock(
+                entity,
+                &bedrock_move_player_packet(entity, pos, CMovePlayer::MODE_NORMAL, on_ground),
+            );
+            return;
+        };
+        let bedrock = bedrock_move_player_packet(entity, pos, CMovePlayer::MODE_NORMAL, on_ground);
+        match rotation {
+            Some((yaw, pitch)) => world.send_to_tracking_players_editioned(
+                entity,
+                &CUpdateEntityPosRot::new(entity_id, delta, yaw, pitch, on_ground),
+                &bedrock,
             ),
-            &bedrock_move_player_packet(entity, pos, CMovePlayer::MODE_TELEPORT, on_ground),
-        );
-        // Bedrock ignores head yaw on teleport -> follow-up normal move re-asserts.
-        world.send_to_tracking_players_bedrock(
-            entity,
-            &bedrock_move_player_packet(entity, pos, CMovePlayer::MODE_NORMAL, on_ground),
-        );
-        true
+            None => world.send_to_tracking_players_editioned(
+                entity,
+                &CUpdateEntityPos::new(entity_id, delta, on_ground),
+                &bedrock,
+            ),
+        }
     }
 
-    #[expect(clippy::too_many_lines)]
     pub fn handle_position(
         &self,
         player: &Arc<Player>,
@@ -104,8 +118,16 @@ impl JavaClient {
             'after: {
                 let pos = event.to;
                 let entity = &player.get_entity();
-                let last_pos = entity.pos.load();
-                player.get_entity().set_pos(pos);
+                let on_ground = packet.collision & FLAG_ON_GROUND != 0;
+                let world = &player.world();
+                let Some(last_pos) = player.apply_client_move(|| {
+                    let last_pos = entity.pos.load();
+                    entity.set_pos(pos);
+                    Self::broadcast_move(world, entity, pos, last_pos, on_ground, None);
+                    last_pos
+                }) else {
+                    return;
+                };
                 player.record_legacy_movement(Vector3::new(pos.x - last_pos.x, pos.y - last_pos.y, pos.z - last_pos.z));
 
                 let distance = last_pos.squared_distance_to_vec(&pos).sqrt();
@@ -120,34 +142,9 @@ impl JavaClient {
                     player.jump();
                 }
 
-                let new_on_ground = packet.collision & FLAG_ON_GROUND != 0;
-                entity.on_ground.store(new_on_ground, Ordering::Relaxed);
-                if new_on_ground && entity.is_fall_flying() {
+                entity.on_ground.store(on_ground, Ordering::Relaxed);
+                if on_ground && entity.is_fall_flying() {
                     entity.set_fall_flying(false);
-                }
-                let world = &player.world();
-
-                // TODO: Warn when player moves to quickly
-                if !Self::sync_position(player, world, entity, pos, last_pos, packet.collision & FLAG_ON_GROUND != 0) {
-                    // Send the new position to tracking players only.
-                    world.send_to_tracking_players_editioned(
-                        entity,
-                        &CUpdateEntityPos::new(
-                            player.entity_id().into(),
-                            Vector3::new(
-                                pos.x.mul_add(4096.0, -(last_pos.x * 4096.0)) as i16,
-                                pos.y.mul_add(4096.0, -(last_pos.y * 4096.0)) as i16,
-                                pos.z.mul_add(4096.0, -(last_pos.z * 4096.0)) as i16,
-                            ),
-                            packet.collision & FLAG_ON_GROUND != 0,
-                        ),
-                        &bedrock_move_player_packet(
-                            entity,
-                            pos,
-                            CMovePlayer::MODE_NORMAL,
-                            packet.collision & FLAG_ON_GROUND != 0,
-                        ),
-                    );
                 }
 
                 // Only process fall damage if player is alive
@@ -246,8 +243,21 @@ impl JavaClient {
             'after: {
                 let pos = event.to;
                 let entity = &player.get_entity();
-                let last_pos = entity.pos.load();
-                player.get_entity().set_pos(pos);
+                let on_ground = (packet.collision & FLAG_ON_GROUND) != 0;
+                let world = entity.world.load_full();
+                let Some(last_pos) = player.apply_client_move(|| {
+                    let last_pos = entity.pos.load();
+                    entity.set_pos(pos);
+                    entity.set_rotation(wrap_degrees(packet.yaw) % 360.0, wrap_degrees(packet.pitch));
+                    // TODO: use `pumpkin_util::math::pack_degrees`.
+                    let yaw = (entity.yaw.load() * 256.0 / 360.0).rem_euclid(256.0) as u8;
+                    let pitch = (entity.pitch.load() * 256.0 / 360.0).rem_euclid(256.0) as u8;
+                    Self::broadcast_move(&world, entity, pos, last_pos, on_ground, Some((yaw, pitch)));
+                    world.send_to_tracking_players(entity, &CHeadRot::new(entity.entity_id.into(), yaw));
+                    last_pos
+                }) else {
+                    return;
+                };
                 player.record_legacy_movement(Vector3::new(pos.x - last_pos.x, pos.y - last_pos.y, pos.z - last_pos.z));
 
                 let distance = last_pos.squared_distance_to_vec(&pos).sqrt();
@@ -264,52 +274,8 @@ impl JavaClient {
                 {
                     player.jump();
                 }
-                entity
-                    .on_ground
-                    .store((packet.collision & FLAG_ON_GROUND) != 0, Ordering::Relaxed);
+                entity.on_ground.store(on_ground, Ordering::Relaxed);
 
-                entity.set_rotation(wrap_degrees(packet.yaw) % 360.0, wrap_degrees(packet.pitch));
-
-                let entity_id = entity.entity_id;
-
-                // TODO: use `pumpkin_util::math::pack_degrees`.
-                let yaw = (entity.yaw.load() * 256.0 / 360.0).rem_euclid(256.0);
-                let pitch = (entity.pitch.load() * 256.0 / 360.0).rem_euclid(256.0);
-                let world = entity.world.load_full();
-
-                // TODO: Warn when player moves to quickly
-                if !Self::sync_position(
-                    player,
-                    &world,
-                    entity,
-                    pos,
-                    last_pos,
-                    (packet.collision & FLAG_ON_GROUND) != 0,
-                ) {
-                    // Send the new position to tracking players only.
-                    world.send_to_tracking_players_editioned(
-                        entity,
-                        &CUpdateEntityPosRot::new(
-                            entity_id.into(),
-                            Vector3::new(
-                                pos.x.mul_add(4096.0, -(last_pos.x * 4096.0)) as i16,
-                                pos.y.mul_add(4096.0, -(last_pos.y * 4096.0)) as i16,
-                                pos.z.mul_add(4096.0, -(last_pos.z * 4096.0)) as i16,
-                            ),
-                            yaw as u8,
-                            pitch as u8,
-                            (packet.collision & FLAG_ON_GROUND) != 0,
-                        ),
-                        &bedrock_move_player_packet(
-                            entity,
-                            pos,
-                            CMovePlayer::MODE_NORMAL,
-                            (packet.collision & FLAG_ON_GROUND) != 0,
-                        ),
-                    );
-                }
-
-                world.send_to_tracking_players(entity, &CHeadRot::new(entity_id.into(), yaw as u8));
                 // Only process fall damage if player is alive
                 if !player.abilities.lock().unwrap_or_else(std::sync::PoisonError::into_inner).flying
                     && player.living_entity.health.load() > 0.0

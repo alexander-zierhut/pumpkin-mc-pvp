@@ -45,6 +45,16 @@ fn encode_pos(value: f64) -> i64 {
     (value * 4096.0 + 0.5).floor() as i64
 }
 
+/// Vanilla `VecDeltaCodec.delta`: deltas of the encoded positions, so the client's copy never drifts.
+/// `None` when a delta does not fit into a move packet.
+pub(crate) fn encode_delta(pos: Vector3<f64>, base: Vector3<f64>) -> Option<Vector3<i16>> {
+    Some(Vector3::new(
+        i16::try_from(encode_pos(pos.x) - encode_pos(base.x)).ok()?,
+        i16::try_from(encode_pos(pos.y) - encode_pos(base.y)).ok()?,
+        i16::try_from(encode_pos(pos.z) - encode_pos(base.z)).ok()?,
+    ))
+}
+
 /// Vanilla `ServerEntity.sendChanges` packet choice.
 #[derive(Clone, Copy)]
 enum MoveSync {
@@ -220,14 +230,7 @@ impl TrackedEntity {
         let base = entity.last_sent_pos.load();
         let send_pos = (pos - base).length_squared() >= f64::from(7.629_394_5e-6f32)
             || tick.is_multiple_of(60);
-        let delta = match (
-            i16::try_from(encode_pos(pos.x) - encode_pos(base.x)),
-            i16::try_from(encode_pos(pos.y) - encode_pos(base.y)),
-            i16::try_from(encode_pos(pos.z) - encode_pos(base.z)),
-        ) {
-            (Ok(x), Ok(y), Ok(z)) => Some(Vector3::new(x, y, z)),
-            _ => None,
-        };
+        let delta = encode_delta(pos, base);
         let on_ground = entity.on_ground.load(Relaxed);
         let is_arrow = [
             &EntityType::ARROW,
