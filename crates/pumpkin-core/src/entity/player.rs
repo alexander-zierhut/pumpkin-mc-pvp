@@ -4249,6 +4249,11 @@ impl Player {
         self.chunk_send_epoch.fetch_add(1, Ordering::Relaxed);
         let teleport_id = i + 1;
         self.living_entity.entity.set_pos(position);
+        // Vanilla `ServerPlayer.teleportTo` moves the chunk view right away; waiting for the
+        // client's next position packet leaves a standing player without chunks for up to a second.
+        if let Some(player_arc) = self.world().get_player_by_uuid(self.gameprofile.id) {
+            crate::world::chunker::update_position(&player_arc);
+        }
         let entity = &self.living_entity.entity;
         entity.set_rotation(yaw, pitch);
         match self.client.as_ref() {
