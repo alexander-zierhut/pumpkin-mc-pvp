@@ -900,6 +900,14 @@ interface %world {
         /// Spawns an entity of the specified type at the given position.
         spawn-entity: func(entity-type: entity-type, pos: position) -> entity;
 
+        /// Keeps the chunks covering the block columns between the two corners loaded (like `/forceload`),
+        /// or releases them. Block reads in unloaded chunks return air and writes are lost, so a
+        /// plugin that edits an area without players nearby forces it first. Loading is asynchronous.
+        set-chunks-forced: func(corner-a: block-pos, corner-b: block-pos, forced: bool);
+
+        /// Whether the chunk at these chunk coordinates is loaded.
+        is-chunk-loaded: func(chunk-x: s32, chunk-z: s32) -> bool;
+
         /// Returns a list of all entities in this world.
         get-entities: func() -> list<entity>;
 
