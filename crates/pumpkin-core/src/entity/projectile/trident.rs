@@ -138,6 +138,11 @@ impl TridentEntity {
             return true;
         }
 
+        // Spectators are never hit (vanilla `EntitySelector.NO_SPECTATORS`)
+        if other.is_spectator() {
+            return true;
+        }
+
         // Skip owner for initial frames (5 ticks)
         if Some(other_ent.entity_id) == self.owner_id
             && self_ent.tick_count.load(Ordering::Relaxed) < 5
@@ -263,7 +268,7 @@ impl EntityBase for TridentEntity {
         }
 
         // Entity collisions
-        let candidates = world.get_entities_at_box(&search_box);
+        let candidates = world.get_all_at_box(&search_box);
         for cand in candidates {
             if self.should_skip_collision(entity, &cand) {
                 continue;
