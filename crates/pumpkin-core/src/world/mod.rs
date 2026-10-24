@@ -3928,6 +3928,16 @@ impl World {
         }
 
         let block_count = explosion.explode(self);
+        self.send_explosion(explosion, position, power, block_count);
+    }
+
+    fn send_explosion(
+        &self,
+        explosion: &Explosion,
+        position: Vector3<f64>,
+        power: f32,
+        block_count: u32,
+    ) {
         let particle = if power < 2.0 {
             Particle::Explosion
         } else {
@@ -3942,11 +3952,35 @@ impl World {
                 position,
                 power,
                 block_count as i32,
-                None,
+                explosion.knockback_for(player.entity_id()),
                 VarInt(particle as i32),
                 sound.clone(),
             ));
         }
+    }
+
+    /// Explosion that only destroys the given blocks (vanilla rays and resistance otherwise),
+    /// with an optional fixed entity damage and entities it does not hurt. Returns the destroyed
+    /// blocks. Not cancellable by `EntityExplodeEvent`: the caller is the plugin itself.
+    pub fn explode_filtered(
+        self: &Arc<Self>,
+        position: Vector3<f64>,
+        power: f32,
+        allowed: rustc_hash::FxHashSet<BlockPos>,
+        fixed_damage: Option<f32>,
+        exempt_entities: Vec<i32>,
+    ) -> Vec<BlockPos> {
+        let calculator = Arc::new(explosion::FilteredExplosionCalculator::new(
+            allowed,
+            fixed_damage,
+            exempt_entities,
+        ));
+        let block_interaction = self.get_block_interaction(ExplosionInteraction::Tnt);
+        let explosion = Explosion::new(power, position, block_interaction)
+            .with_damage_calculator(calculator.clone());
+        let block_count = explosion.explode(self);
+        self.send_explosion(&explosion, position, power, block_count);
+        calculator.destroyed()
     }
 
     pub(crate) fn despawn_dead_java_player_for_bedrock(&self, subject: &Entity) {

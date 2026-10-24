@@ -1235,6 +1235,37 @@ impl pumpkin::plugin::world::HostWorldWithStore<PluginHostState> for HasSelf<Plu
         host.get().add(entity)
     }
 
+    async fn explode_filtered(
+        mut host: Access<'_, PluginHostState, Self>,
+        world: Resource<World>,
+        pos: WitPosition,
+        power: f32,
+        breakable: Vec<WitBlockPos>,
+        entity_damage: Option<f32>,
+        exempt_entities: Vec<i32>,
+    ) -> wasmtime::Result<Vec<WitBlockPos>> {
+        let (world, plugin) = world_and_plugin(host.get(), &world)?;
+        let pos = pumpkin_util::math::vector3::Vector3::new(pos.0, pos.1, pos.2);
+        let allowed = breakable
+            .iter()
+            .map(|p| BlockPos::new(p.x, p.y, p.z))
+            .collect();
+        let destroyed = plugin
+            .store
+            .pump_blocking(&mut host, move || {
+                world.explode_filtered(pos, power, allowed, entity_damage, exempt_entities)
+            })
+            .await?;
+        Ok(destroyed
+            .into_iter()
+            .map(|p| WitBlockPos {
+                x: p.0.x,
+                y: p.0.y,
+                z: p.0.z,
+            })
+            .collect())
+    }
+
     async fn drop_item(
         mut host: Access<'_, PluginHostState, Self>,
         world: Resource<World>,
