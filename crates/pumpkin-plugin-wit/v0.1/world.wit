@@ -876,6 +876,11 @@ interface %world {
         /// Creates an explosion at the specified position.
         create-explosion: func(pos: position, power: f32, create-fire: bool, interaction: explosion-interaction);
 
+        /// Creates a TNT-like explosion (vanilla rays, block resistance, damage, knockback) that only
+        /// destroys the listed blocks. `entity-damage` replaces the distance-based damage and
+        /// `exempt-entities` take no damage. Returns the listed blocks that were destroyed.
+        explode-filtered: func(pos: position, power: f32, breakable: list<block-pos>, entity-damage: option<f32>, exempt-entities: list<s32>) -> list<block-pos>;
+
         /// Returns the sea level of this world.
         get-sea-level: func() -> s32;
 
