@@ -20,6 +20,10 @@ interface gui {
         
         /// Returns the number of slots in this GUI.
         get-size: func() -> u32;
+
+        /// Returns a new handle to a GUI showing the same inventory (same title and settings).
+        /// `open-gui` consumes its handle, so a shared GUI (e.g. a team chest) is opened via shares.
+        share: func() -> gui;
         
         /// Clears all items from the GUI.
         clear-items: func();

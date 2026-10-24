@@ -2399,6 +2399,12 @@ impl pumpkin::plugin::player::HostPlayer for PluginHostState {
         Ok(())
     }
 
+    fn sync_inventory(&mut self, player: Resource<Player>) -> wasmtime::Result<()> {
+        let player = self.get(&player)?.clone();
+        player.sync_inventory_to_client();
+        Ok(())
+    }
+
     fn get_selected_slot(&mut self, player: Resource<Player>) -> wasmtime::Result<u8> {
         let player = self.get(&player)?;
         Ok(player.inventory.get_selected_slot())
@@ -2877,6 +2883,21 @@ impl pumpkin::plugin::player::HostPlayerWithStore<PluginHostState> for HasSelf<P
         plugin
             .store
             .pump_blocking(&mut host, move || player.set_gamemode(mode))
+            .await
+    }
+
+    // Closing fires `InventoryCloseEvent`, which may call back into this plugin.
+    async fn close_screen(
+        mut host: Access<'_, PluginHostState, Self>,
+        player: Resource<Player>,
+    ) -> wasmtime::Result<()> {
+        let (player, plugin) = {
+            let state = host.get();
+            (state.get(&player)?.clone(), plugin_from_state(state)?)
+        };
+        plugin
+            .store
+            .pump_blocking(&mut host, move || player.close_handled_screen())
             .await
     }
 
