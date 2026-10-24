@@ -32,6 +32,8 @@ const GROUND_FRICTION: f64 = 0.546;
 const LAUNCH_INACCURACY: f64 = 0.007_499_999_832_361_937;
 /// `ItemBow.onPlayerStoppedUsing`: arrow speed is `force * 2 * 1.5`.
 const ARROW_SPEED: f64 = 3.0;
+/// `NetHandlerPlayServer.processUseEntity` accepts attacks closer than 6 blocks.
+const MAX_ATTACK_DISTANCE_SQUARED: f64 = 36.0;
 
 /// The legacy combat config when it is enabled for this world's server.
 pub fn config(world: &World) -> Option<LegacyCombatConfig> {
@@ -353,6 +355,15 @@ impl Player {
     pub fn legacy_attack(&self, victim: &Arc<dyn EntityBase>, cfg: &LegacyCombatConfig) {
         let world = self.world();
         let attacker = &self.living_entity.entity;
+        // 1.8 `NetHandlerPlayServer.processUseEntity`: attacks from 6 blocks (feet to feet) or more are ignored
+        if attacker
+            .pos
+            .load()
+            .squared_distance_to_vec(&victim.get_entity().pos.load())
+            >= MAX_ATTACK_DISTANCE_SQUARED
+        {
+            return;
+        }
         let item_stack = self.inventory().held_item();
         if !item_stack.is_empty() {
             self.increment_stat(
