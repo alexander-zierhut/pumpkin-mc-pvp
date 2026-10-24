@@ -317,11 +317,13 @@ impl DataComponentCodec<Self> for ItemModelImpl {
 
 impl DataComponentCodec<Self> for CustomNameImpl {
     fn serialize(&self, seq: &mut impl NetworkWriteExt) -> Result<(), WritingError> {
-        let mut bytes = Vec::new();
-        NbtTag::String(self.name.clone().get_text().into_boxed_str())
-            .serialize(&mut NbtWriteHelperJava::new(&mut bytes))
-            .map_err(|e| WritingError::Message(e.to_string()))?;
-        seq.write_slice(&bytes)?;
+        // the full text component (colours, bold, `italic: false` ...), like `LoreImpl`; plain `get_text()` lost
+        // every style, so custom names showed up white and italic
+        seq.write_slice(
+            &self
+                .name
+                .encode_for_version(&pumpkin_util::version::JavaMinecraftVersion::V_26_2),
+        )?;
         Ok(())
     }
 
@@ -3454,6 +3456,26 @@ mod tests {
         bytes.push(0); // no signature
         bytes.extend_from_slice(&[0, 0, 0, 0]); // no texture, cape, elytra, model
         bytes
+    }
+
+    #[test]
+    fn custom_name_keeps_its_style_on_the_wire() {
+        use pumpkin_util::text::TextComponent;
+        use pumpkin_util::text::color::NamedColor;
+        let name = TextComponent::text("Bronze")
+            .color_named(NamedColor::DarkRed)
+            .bold();
+        let mut encoded = Vec::new();
+        CustomNameImpl { name: name.clone() }
+            .serialize(&mut encoded)
+            .unwrap();
+        let decoded = CustomNameImpl::deserialize(&mut encoded.as_slice()).unwrap();
+        assert_eq!(decoded.name.clone().get_text(), "Bronze");
+        // same component (the NBT field order may differ)
+        assert_eq!(
+            serde_json::to_value(&decoded.name).unwrap(),
+            serde_json::to_value(&name).unwrap()
+        );
     }
 
     #[test]
