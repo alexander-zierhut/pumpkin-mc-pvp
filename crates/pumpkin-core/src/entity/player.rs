@@ -487,6 +487,8 @@ pub struct Player {
     pub subscribed_debug_sample: AtomicBool,
     /// Whether the client has reported that it has loaded.
     pub client_loaded: AtomicBool,
+    /// Whether the client has been loaded at least once (it is in the play state; set by `set_client_loaded`).
+    pub client_loaded_once: AtomicBool,
     pub bedrock_spawned: AtomicBool,
     /// Whether the player is frozen in place (movement locked for dialogues/cutscenes).
     pub is_movement_locked: AtomicBool,
@@ -782,6 +784,7 @@ impl Player {
             last_attacked_ticks: AtomicU32::new(0),
             legacy_movement: AtomicCell::new((Vector3::new(0.0, 0.0, 0.0), i32::MIN / 2)),
             client_loaded: AtomicBool::new(initially_loaded),
+            client_loaded_once: AtomicBool::new(initially_loaded),
             bedrock_spawned: AtomicBool::new(false),
             client_loaded_timeout: AtomicU32::new(if initially_loaded { 0 } else { 60 }),
             chat_spam_tick_count: AtomicU32::new(0),
@@ -3195,13 +3198,22 @@ impl Player {
             || self.client_loaded_timeout.load(Ordering::Relaxed) == 0
     }
 
+    /// A Java client that already was in the play state (respawn, world change) gets health updates even
+    /// before it reports `player_loaded` again.
+    fn may_sync_health_before_loaded(&self) -> bool {
+        matches!(self.client.as_ref(), ClientPlatform::Java(_))
+            && self.client_loaded_once.load(Ordering::Relaxed)
+    }
+
     pub fn set_client_loaded(&self, loaded: bool) {
         if !self.supports_player_loaded() {
             self.client_loaded.store(true, Ordering::Relaxed);
             self.client_loaded_timeout.store(0, Ordering::Relaxed);
             return;
         }
-        if !loaded {
+        if loaded {
+            self.client_loaded_once.store(true, Ordering::Relaxed);
+        } else {
             self.client_loaded_timeout.store(60, Ordering::Relaxed);
         }
         self.client_loaded.store(loaded, Ordering::Relaxed);
@@ -4479,7 +4491,10 @@ impl Player {
     }
 
     pub fn send_health(&self) {
-        if !self.has_client_loaded() {
+        // Java gets its health after a respawn whether or not it has reported `player_loaded` again
+        // (vanilla `ServerPlayer.doTick`): clients that wait for it before they report (mineflayer) were stuck
+        // until the 60 tick timeout. Before the first load (still joining) and on Bedrock it waits as before.
+        if !self.has_client_loaded() && !self.may_sync_health_before_loaded() {
             return;
         }
 
@@ -4549,7 +4564,7 @@ impl Player {
     }
 
     pub fn tick_health(&self) {
-        if !self.has_client_loaded() {
+        if !self.has_client_loaded() && !self.may_sync_health_before_loaded() {
             return;
         }
 
