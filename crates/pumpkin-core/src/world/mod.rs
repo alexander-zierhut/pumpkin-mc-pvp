@@ -3534,6 +3534,8 @@ impl World {
             client
                 .enqueue_client_packet(&CPlayerInfoUpdate::new(action_flags.bits(), &entries))
                 .await;
+            // (vanilla `PlayerList.placeNewPlayer`: every PlayerInfo before the first entity)
+            player.tab_list_sent.store(true, Ordering::Relaxed);
 
             // Send tab_list_names for existing players with custom names
             for (player_id, tab_list_name) in &players_tab_list_names {
