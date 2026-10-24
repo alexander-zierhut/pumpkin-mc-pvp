@@ -9,4 +9,5 @@ pub mod logging;
 pub mod plugin;
 pub mod scheduler;
 pub mod signature;
+pub mod sound;
 pub mod state;
