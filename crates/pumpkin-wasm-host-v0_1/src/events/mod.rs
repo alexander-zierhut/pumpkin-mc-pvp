@@ -1,4 +1,7 @@
-use std::{any::Any, sync::Arc};
+use std::{
+    any::Any,
+    sync::{Arc, OnceLock},
+};
 
 use pumpkin_data::{Block, entity::EntityType};
 use pumpkin_inventory::screen_handler::ClickType;
@@ -7,7 +10,7 @@ use pumpkin_util::{
     GameMode, Hand,
     math::{position::BlockPos, vector3::Vector3},
 };
-use wasmtime::component::Resource;
+use wasmtime::component::{Resource, TypedFunc};
 
 use crate::pumpkin;
 use pumpkin_core::{
@@ -35,9 +38,33 @@ pub use cleanup::*;
 
 impl pumpkin::plugin::event::Host for PluginHostState {}
 
+/// `handle-event` typed with owned arguments (the generated one borrows the event).
+type HandleEventFunc = TypedFunc<
+    (
+        u32,
+        Resource<crate::pumpkin::plugin::server::Server>,
+        WasmEvent,
+    ),
+    (WasmEvent,),
+>;
+
 pub struct WasmPluginEventHandler {
     pub handler_id: u32,
     pub plugin: Arc<WasmPlugin>,
+    /// Typed on the first event: re-typing on every call walks the whole event variant again,
+    /// a large part of the host time of a call (player moves arrive 20 times a second).
+    handle_event: Arc<OnceLock<HandleEventFunc>>,
+}
+
+impl WasmPluginEventHandler {
+    #[must_use]
+    pub fn new(handler_id: u32, plugin: Arc<WasmPlugin>) -> Self {
+        Self {
+            handler_id,
+            plugin,
+            handle_event: Arc::default(),
+        }
+    }
 }
 
 pub trait ToFromWasmEvent {
@@ -281,6 +308,7 @@ impl WasmPluginEventHandler {
             .instance::<crate::Plugin>()
             .func_handle_event()
             .func();
+        let handle_event = self.handle_event.clone();
         self.plugin
             .store
             .call_guest(move |mut guest| {
@@ -295,16 +323,16 @@ impl WasmPluginEventHandler {
                             }
                         }
                     })?;
+                    let typed = if let Some(typed) = handle_event.get() {
+                        *typed
+                    } else {
+                        let typed = guest.typed(function)?;
+                        *handle_event.get_or_init(|| typed)
+                    };
                     // Lowering transfers these resources to the guest. Only a
                     // successfully returned event is owned by the host again.
                     let (returned_event,) = guest
-                        .call_func::<(
-                            u32,
-                            Resource<crate::pumpkin::plugin::server::Server>,
-                            WasmEvent,
-                        ), (WasmEvent,)>(
-                            function, (handler_id, server_res, wasm_event)
-                        )
+                        .call(typed, (handler_id, server_res, wasm_event))
                         .await?;
                     Ok(guest.with(|mut store| event.from_wasm(returned_event, store.data_mut())))
                 })
@@ -314,13 +342,22 @@ impl WasmPluginEventHandler {
 }
 
 impl<E: Payload + ToFromWasmEvent + Clone + 'static> EventHandler<E> for WasmPluginEventHandler {
+    /// A non-blocking handler cannot change the event, so the guest call runs as its own task: the
+    /// caller (often the tick thread, e.g. for every player move) does not wait for the plugin.
     fn handle<'a>(&'a self, server: &'a Arc<Server>, event: &'a E) -> BoxFuture<'a, ()> {
-        Box::pin(async {
-            let pending = Box::new(NotifiedEvent(event.clone()));
-            if let Err(error) = self.dispatch(server.clone(), pending).await {
-                tracing::error!(handler_id = self.handler_id, %error, "Wasm event handler failed");
+        let handler = Self {
+            handler_id: self.handler_id,
+            plugin: self.plugin.clone(),
+            handle_event: self.handle_event.clone(),
+        };
+        let pending = Box::new(NotifiedEvent(event.clone()));
+        let server = server.clone();
+        drop(tokio::spawn(async move {
+            if let Err(error) = handler.dispatch(server, pending).await {
+                tracing::error!(handler_id = handler.handler_id, %error, "Wasm event handler failed");
             }
-        })
+        }));
+        Box::pin(async {})
     }
 
     fn handle_blocking<'a>(
