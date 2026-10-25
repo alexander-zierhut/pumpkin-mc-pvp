@@ -28,6 +28,12 @@ pub const RESTING_MOTION_Y: f64 = -0.0784;
 const AIR_FRICTION: f64 = 0.91;
 /// Same, on a normal block (slipperiness 0.6 * 0.91).
 const GROUND_FRICTION: f64 = 0.546;
+/// `EntityLivingBase.onLivingUpdate`: smaller motion components snap to 0.
+const MOTION_EPSILON: f64 = 0.005;
+/// `EntityLivingBase.getJumpUpwardsMotion`.
+const JUMP_MOTION: f64 = 0.42;
+/// `EntityLivingBase.jump`: sprint jumps add this along the yaw.
+const SPRINT_JUMP_BOOST: f64 = 0.2;
 /// `Entity.setThrowableHeading` inaccuracy step.
 const LAUNCH_INACCURACY: f64 = 0.007_499_999_832_361_937;
 /// `ItemBow.onPlayerStoppedUsing`: arrow speed is `force * 2 * 1.5`.
@@ -167,24 +173,53 @@ pub fn extra_knockback(attacker_yaw: f32, level: i32, cfg: &LegacyCombatConfig) 
     )
 }
 
-/// The motion a 1.8 server would hold for a player after this movement tick
-/// (`moveEntityWithHeading`: friction on x/z, gravity and drag on y).
+/// One tick of the motion a 1.8 server keeps for a player (`EntityPlayerMP.onUpdateEntity`).
+///
+/// 1.8 runs it once per movement packet. The server never sees the client's input or the knockback the client flies with, so this motion only decays
+/// and falls: friction on x/z, gravity and drag on y, and landing (`Block.onLanded`) zeroes y first. `on_ground`
+/// is the state of the previous packet.
 #[must_use]
-pub fn motion_from_movement(delta: Vector3<f64>, on_ground: bool) -> Vector3<f64> {
+pub fn server_motion_tick(motion: Vector3<f64>, on_ground: bool) -> Vector3<f64> {
+    let snap = |v: f64| if v.abs() < MOTION_EPSILON { 0.0 } else { v };
     let friction = if on_ground {
         GROUND_FRICTION
     } else {
         AIR_FRICTION
     };
+    let y = if on_ground && motion.y <= 0.0 {
+        0.0
+    } else {
+        snap(motion.y)
+    };
     Vector3::new(
-        delta.x * friction,
-        if on_ground {
-            RESTING_MOTION_Y
-        } else {
-            (delta.y - 0.08) * 0.98
-        },
-        delta.z * friction,
+        snap(motion.x) * friction,
+        (y - 0.08) * 0.98,
+        snap(motion.z) * friction,
     )
+}
+
+/// 1.8 `EntityLivingBase.jump` on the server's copy of a player's motion.
+///
+/// The 1.8 server runs it itself when a movement packet leaves the ground going up
+/// (`NetHandlerPlayServer.processPlayer`); a sprint jump also adds 0.2 along the yaw.
+#[must_use]
+pub fn server_jump(
+    motion: Vector3<f64>,
+    yaw: f32,
+    sprinting: bool,
+    jump_boost_level: i32,
+) -> Vector3<f64> {
+    let mut motion = Vector3::new(
+        motion.x,
+        JUMP_MOTION + f64::from(jump_boost_level.max(0)) * 0.1,
+        motion.z,
+    );
+    if sprinting {
+        let yaw = f64::from(yaw.to_radians());
+        motion.x -= yaw.sin() * SPRINT_JUMP_BOOST;
+        motion.z += yaw.cos() * SPRINT_JUMP_BOOST;
+    }
+    motion
 }
 
 /// 1.8 `EntityLivingBase.applyArmorCalculations`: 4 % less damage per armour point, no toughness.
@@ -314,25 +349,35 @@ fn is_climbing(entity: &Entity) -> bool {
 }
 
 impl Player {
-    /// Motion the 1.8 server would have for this player, used as the knockback input.
+    /// Motion the 1.8 server would have for this player, the knockback input (`knockBack` halves it).
+    /// It is the server's own copy, not the movement of the client: it only knows the jumps (see [`server_jump`]),
+    /// and 1.8 restores it after a melee hit has sent the knockback, so consecutive hits do not stack.
     pub fn legacy_motion(&self) -> Vector3<f64> {
+        self.legacy_server_motion.load()
+    }
+
+    /// Advances [`Self::legacy_motion`] by one tick (1.8: one movement packet): [`server_motion_tick`] with the
+    /// previous ground state, then [`server_jump`] if the player left the ground going up.
+    pub fn tick_legacy_motion(&self) {
         let entity = &self.living_entity.entity;
-        let tick = entity.tick_count.load(Ordering::Relaxed);
-        let (delta, at_tick) = self.legacy_movement.load();
         let on_ground = entity.on_ground.load(Ordering::Relaxed);
-        if tick.saturating_sub(at_tick) > 1 {
-            // no movement packet last tick: the player stands (or hangs) still
-            return Vector3::new(
-                0.0,
-                if on_ground {
-                    RESTING_MOTION_Y
-                } else {
-                    -0.08 * 0.98
-                },
-                0.0,
-            );
+        let was_on_ground = self.legacy_on_ground.swap(on_ground, Ordering::Relaxed);
+        let mut motion = server_motion_tick(self.legacy_server_motion.load(), was_on_ground);
+        let (delta, at_tick) = self.legacy_movement.load();
+        let moved_up = entity
+            .tick_count
+            .load(Ordering::Relaxed)
+            .saturating_sub(at_tick)
+            <= 1
+            && delta.y > 0.0;
+        if was_on_ground && !on_ground && moved_up {
+            let jump_boost = self
+                .living_entity
+                .get_effect(&StatusEffect::JUMP_BOOST)
+                .map_or(0, |e| i32::from(e.amplifier) + 1);
+            motion = server_jump(motion, entity.yaw.load(), entity.is_sprinting(), jump_boost);
         }
-        motion_from_movement(delta, on_ground)
+        self.legacy_server_motion.store(motion);
     }
 
     /// Records the movement of one client position packet for [`Self::legacy_motion`].
@@ -352,6 +397,7 @@ impl Player {
     }
 
     /// 1.8 `EntityPlayer.attackTargetEntityWithCurrentItem`.
+    #[expect(clippy::too_many_lines)]
     pub fn legacy_attack(&self, victim: &Arc<dyn EntityBase>, cfg: &LegacyCombatConfig) {
         let world = self.world();
         let attacker = &self.living_entity.entity;
@@ -405,6 +451,13 @@ impl Player {
         self.last_attacked_ticks.store(0, Ordering::Relaxed);
 
         let victim_entity = victim.get_entity();
+        // 1.8 keeps the victim's motion from before the hit and restores it once the velocity packet is out; the
+        // knockback starts from that motion (an extra push without base knockback too)
+        let victim_motion = victim.get_player().map(|player| {
+            let motion = player.legacy_motion();
+            victim_entity.velocity.store(motion);
+            motion
+        });
         let hit = victim.damage_with_context(
             victim.as_ref(),
             damage,
@@ -426,11 +479,13 @@ impl Player {
                 victim_entity.velocity_dirty.store(true, Ordering::SeqCst);
                 attacker.set_sprinting(false);
             }
-            // 1.8 sends the victim's new motion right away (S12PacketEntityVelocity)
-            if victim.get_player().is_some()
+            // 1.8 sends the victim's new motion right away (S12PacketEntityVelocity) and restores the old one
+            if let (Some(player), Some(motion)) = (victim.get_player(), victim_motion)
                 && victim_entity.velocity_dirty.swap(false, Ordering::SeqCst)
             {
                 victim_entity.send_velocity();
+                victim_entity.velocity.store(motion);
+                player.legacy_server_motion.store(motion);
             }
             if fire_aspect > 0 {
                 victim_entity.set_on_fire_for_ticks((fire_aspect * 4 * 20) as u32);
@@ -550,12 +605,44 @@ mod tests {
         assert!((v.x + 1.0).abs() < 1e-6 && v.z.abs() < 1e-6);
     }
 
+    /// Vertical knockback on a player hit `n` client ticks after it jumped, as a real 1.8.9 server sent it
+    /// (mineflayer 1.8.9 bots, velocity packets in 1/8000): the cap of 0.4 while the jump still rises, then less.
     #[test]
-    fn motion_estimate_matches_1_8_physics() {
-        let ground = motion_from_movement(Vector3::new(0.2806, 0.0, 0.0), true);
-        assert!(close(ground.x, 0.2806 * GROUND_FRICTION) && close(ground.y, RESTING_MOTION_Y));
-        let air = motion_from_movement(Vector3::new(0.0, 0.42, 0.0), false);
-        assert!(close(air.y, (0.42 - 0.08) * 0.98));
+    fn knockback_on_a_jumping_player_matches_1_8_9() {
+        let rest = server_motion_tick(Vector3::new(0.0, 0.0, 0.0), true);
+        let measured = [(1, 0.4), (2, 0.4), (3, 0.4), (4, 0.4), (6, 0.4), (8, 0.322)];
+        for (n, expected) in measured {
+            // the packet that leaves the ground: physics on the ground, then the server side jump
+            let mut motion = server_jump(server_motion_tick(rest, true), 0.0, false, 0);
+            for _ in 1..n {
+                motion = server_motion_tick(motion, false);
+            }
+            let sent = (base_knockback(motion, -1.0, 0.0, &cfg()).y * 8000.0).floor() / 8000.0;
+            assert!(
+                (sent - expected).abs() < 0.001,
+                "{n} ticks: {sent} instead of {expected}"
+            );
+        }
+        // standing: 0.3608 (1.8.9 sent 0.361)
+        assert!(close(base_knockback(rest, -1.0, 0.0, &cfg()).y, 0.360_8));
+    }
+
+    #[test]
+    fn server_motion_decays_and_sprint_jumps_push_along_the_yaw() {
+        assert!(close(
+            server_motion_tick(Vector3::new(0.0, 0.0, 0.0), true).y,
+            RESTING_MOTION_Y
+        ));
+        // horizontal motion decays (ground 0.546, air 0.91) and snaps to 0 below 0.005
+        let pushed = server_motion_tick(Vector3::new(0.4, 0.0, 0.004), true);
+        assert!(close(pushed.x, 0.4 * GROUND_FRICTION) && pushed.z == 0.0);
+        assert!(close(
+            server_motion_tick(Vector3::new(0.4, 0.2, 0.0), false).x,
+            0.4 * AIR_FRICTION
+        ));
+        // yaw 0 looks to +z; Jump Boost II adds 0.2
+        let jump = server_jump(Vector3::new(0.0, RESTING_MOTION_Y, 0.0), 0.0, true, 2);
+        assert!(close(jump.x, 0.0) && close(jump.y, 0.62) && close(jump.z, 0.2));
     }
 
     #[test]
