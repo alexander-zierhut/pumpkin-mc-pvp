@@ -59,14 +59,18 @@ impl LpVector3d {
     }
 
     pub fn read<R: std::io::Read>(reader: &mut R) -> Result<Self, ReadingError> {
+        // Vanilla `LpVec3.read`: a zero vector is a single 0 byte, so check the first byte alone.
         let mut low_16 = [0u8; 2];
         reader
-            .read_exact(&mut low_16)
+            .read_exact(&mut low_16[..1])
             .map_err(|e| ReadingError::Message(e.to_string()))?;
 
-        if low_16[0] == 0 && low_16[1] == 0 {
+        if low_16[0] == 0 {
             return Ok(Self(Vector3::new(0.0, 0.0, 0.0)));
         }
+        reader
+            .read_exact(&mut low_16[1..])
+            .map_err(|e| ReadingError::Message(e.to_string()))?;
 
         let mut mid_32 = [0u8; 4];
         reader
@@ -165,6 +169,36 @@ mod tests {
         let mut buf = Vec::new();
         velocity.write_legacy(&mut buf)?;
         assert_eq!(buf, vec![0x0F, 0xA0, 0xF0, 0x60, 0x00, 0x00]);
+        Ok(())
+    }
+
+    #[test]
+    fn zero_vector_is_one_byte_and_reads_back_without_consuming_more()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut buf = Vec::new();
+        LpVector3d(Vector3::new(0.0, 0.0, 0.0)).write(&mut buf)?;
+        assert_eq!(buf, vec![0x00]);
+        // a zero vector followed by a bool, like the end of a 26.x interact packet
+        let bytes = [0x00u8, 0x01];
+        let mut reader = &bytes[..];
+        assert_eq!(
+            LpVector3d::read(&mut reader)?.0,
+            Vector3::new(0.0, 0.0, 0.0)
+        );
+        assert_eq!(reader, &[0x01]);
+        Ok(())
+    }
+
+    #[test]
+    fn non_zero_vector_round_trips() -> Result<(), Box<dyn std::error::Error>> {
+        let mut buf = Vec::new();
+        LpVector3d(Vector3::new(0.5, -0.25, 0.125)).write(&mut buf)?;
+        let read = LpVector3d::read(&mut &buf[..])?.0;
+        assert!(
+            (read.x - 0.5).abs() < 1e-3
+                && (read.y + 0.25).abs() < 1e-3
+                && (read.z - 0.125).abs() < 1e-3
+        );
         Ok(())
     }
 }
