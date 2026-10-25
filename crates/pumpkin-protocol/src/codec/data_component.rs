@@ -3478,6 +3478,42 @@ mod tests {
         );
     }
 
+    /// Styled name against the bytes of Minecraft 26.3's component stream codec (test from upstream PR #3811).
+    #[test]
+    fn custom_name_matches_the_vanilla_codec() -> Result<(), Box<dyn std::error::Error>> {
+        use pumpkin_util::text::{TextComponent, color::RGBColor};
+        use pumpkin_util::version::JavaMinecraftVersion;
+        use std::io::Cursor;
+
+        let mut name = TextComponent::text("Styled item")
+            .color_rgb(RGBColor {
+                red: 0xB5,
+                green: 0x8C,
+                blue: 0xFF,
+            })
+            .bold();
+        name.0.style.italic = Some(false);
+        let mut encoded = Vec::new();
+        let component = CustomNameImpl { name };
+        component.serialize(&mut encoded)?;
+
+        // Compound entry order is irrelevant, so compare decoded NBT rather than raw bytes.
+        let mut vanilla = b"\x0a\x08\x00\x05color\x00\x07#B58CFF\
+                            \x08\x00\x04text\x00\x0bStyled item\
+                            \x01\x00\x04bold\x01\
+                            \x01\x00\x06italic\x00\x00"
+            .as_slice();
+        let expected = vanilla.get_nbt_with_version(&JavaMinecraftVersion::V_26_3)?;
+        let mut cursor = Cursor::new(encoded.as_slice());
+        let actual = cursor.get_nbt_with_version(&JavaMinecraftVersion::V_26_3)?;
+        assert_eq!(actual, expected);
+        assert_eq!(cursor.position(), encoded.len() as u64);
+        let decoded = CustomNameImpl::deserialize(&mut encoded.as_slice())?;
+        assert_eq!(decoded.name.0.style, component.name.0.style);
+        assert_eq!(decoded.name.get_text(), "Styled item");
+        Ok(())
+    }
+
     #[test]
     fn partial_profile_is_written_with_a_false_tag() {
         let mut encoded = Vec::new();
