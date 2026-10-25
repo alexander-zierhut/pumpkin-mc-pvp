@@ -5796,6 +5796,18 @@ impl Player {
         self.on_handled_screen_closed();
     }
 
+    /// Closes the open screen before another one replaces it.
+    ///
+    /// A Java client swaps the screen on the open packet; a close packet first would grab the mouse
+    /// and re-center the cursor when the new screen releases it (Paper's `openInventory` also closes
+    /// only server side).
+    fn close_handled_screen_for_new(&self) {
+        match self.client.as_ref() {
+            ClientPlatform::Java(_) => self.on_handled_screen_closed(),
+            ClientPlatform::Bedrock(_) => self.close_handled_screen(),
+        }
+    }
+
     pub fn on_handled_screen_closed(&self) {
         let current_screen_handler: Arc<std::sync::Mutex<dyn ScreenHandler>> = self
             .current_screen_handler
@@ -5901,7 +5913,7 @@ impl Player {
             .as_any()
             .is::<PlayerScreenHandler>()
         {
-            self.close_handled_screen();
+            self.close_handled_screen_for_new();
         }
 
         let server = self.world().server.upgrade();
@@ -5997,7 +6009,7 @@ impl Player {
             .as_any()
             .is::<PlayerScreenHandler>()
         {
-            self.close_handled_screen();
+            self.close_handled_screen_for_new();
         }
 
         let screen_handler_temp = screen_handler
