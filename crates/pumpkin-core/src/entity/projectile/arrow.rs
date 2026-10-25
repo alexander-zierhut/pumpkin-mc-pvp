@@ -910,13 +910,17 @@ impl EntityBase for ArrowEntity {
                             .store(true, Ordering::SeqCst);
                     }
                     if legacy
-                        && target.get_player().is_some()
+                        && let Some(player) = target.get_player()
                         && target
                             .get_entity()
                             .velocity_dirty
                             .swap(false, Ordering::SeqCst)
                     {
                         target.get_entity().send_velocity();
+                        // unlike a melee hit, 1.8 keeps an arrow's knockback (and Punch) in the server motion
+                        player
+                            .legacy_server_motion
+                            .store(target.get_entity().velocity.load());
                     }
 
                     // Vanilla `AbstractArrow.onHitEntity`: the shooter hears the "ding" when its arrow hurts
