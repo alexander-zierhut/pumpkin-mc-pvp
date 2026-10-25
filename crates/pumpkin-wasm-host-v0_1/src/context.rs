@@ -1440,7 +1440,7 @@ impl pumpkin::plugin::context::HostContext for PluginHostState {
             .ok_or_else(|| wasmtime::Error::msg("Plugin has been dropped"))?;
 
         let ctx = self.get(&context)?.as_ref();
-        let handler = Arc::new(WasmPluginEventHandler { handler_id, plugin });
+        let handler = Arc::new(WasmPluginEventHandler::new(handler_id, plugin));
 
         match event_type {
             event_type @ (EventType::PacketReceivedEvent

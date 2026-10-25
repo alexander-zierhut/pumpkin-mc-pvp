@@ -352,15 +352,29 @@ where
         Params: ComponentNamedList + Lower + 'static,
         Return: ComponentNamedList + Lift + 'static,
     {
-        let function = match &self.access {
+        let function = self.typed::<Params, Return>(function)?;
+        self.call(function, params).await
+    }
+
+    /// Types `function` with owned arguments, see [`Self::call_func`]. The type check walks the
+    /// whole signature (for the event variant a large part of a call's host time), so a caller
+    /// that calls the same export often keeps the result.
+    pub fn typed<Params, Return>(
+        &mut self,
+        function: Func,
+    ) -> wasmtime::Result<TypedFunc<Params, Return>>
+    where
+        Params: ComponentNamedList + Lower + 'static,
+        Return: ComponentNamedList + Lift + 'static,
+    {
+        match &self.access {
             LegacyGuestAccess::Concurrent(accessor) => {
-                accessor.with(|access| function.typed::<Params, Return>(access))?
+                accessor.with(|access| function.typed::<Params, Return>(access))
             }
             LegacyGuestAccess::Sequential { store, .. } => {
-                function.typed::<Params, Return>(store.as_context())?
+                function.typed::<Params, Return>(store.as_context())
             }
-        };
-        self.call(function, params).await
+        }
     }
 }
 
