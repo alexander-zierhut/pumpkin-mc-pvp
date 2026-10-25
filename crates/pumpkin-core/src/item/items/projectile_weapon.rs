@@ -5,6 +5,7 @@ use crate::enchantment::EnchantmentHelper;
 use crate::entity::projectile::arrow::{ArrowEntity, ArrowPickup};
 use crate::entity::{Entity, EntityBase};
 use crate::world::World;
+use pumpkin_data::data_component::DataComponent;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 
@@ -40,11 +41,14 @@ impl ProjectileWeaponItem {
             shooter.pos.load(),
             ArrowEntity::entity_type_for_item(projectile.item),
         );
-        let pickup = if is_creative {
-            ArrowPickup::CreativeOnly
-        } else {
-            ArrowPickup::Allowed
-        };
+        // Vanilla `AbstractArrow`: ammo that was not used up (Infinity, creative, extra Multishot arrows) carries
+        // `intangible_projectile` and can only be picked up in creative
+        let pickup =
+            if is_creative || projectile.has_data_component(DataComponent::IntangibleProjectile) {
+                ArrowPickup::CreativeOnly
+            } else {
+                ArrowPickup::Allowed
+            };
         let arrow =
             ArrowEntity::new_shot_with_weapon(arrow_entity, shooter, projectile, weapon, pickup);
 
@@ -193,5 +197,62 @@ impl ProjectileWeaponItem {
                 world.spawn_entity(arrow_arc);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pumpkin_data::Enchantment;
+    use pumpkin_data::entity::EntityType;
+    use pumpkin_data::item::Item;
+    use pumpkin_data::item_stack::ItemStack;
+    use pumpkin_util::math::vector3::Vector3;
+
+    use super::ProjectileWeaponItem;
+    use crate::entity::Entity;
+    use crate::entity::ai::test_support::world;
+    use crate::entity::projectile::arrow::ArrowPickup;
+
+    /// Arrows that cost no ammo (Infinity, creative) can only be picked up in creative, like vanilla and 1.8.
+    #[tokio::test]
+    async fn arrows_that_cost_no_ammo_cannot_be_picked_up() {
+        let folder = tempfile::tempdir().unwrap();
+        let world = world(&folder);
+        let shooter = Entity::new(
+            world.clone(),
+            Vector3::new(0.5, 64.0, 0.5),
+            &EntityType::PLAYER,
+        );
+        let bow = ItemStack::new(1, &Item::BOW);
+        let mut infinity_bow = ItemStack::new(1, &Item::BOW);
+        infinity_bow.add_enchantment(&Enchantment::INFINITY, 1);
+        let arrow = ItemStack::new(1, &Item::ARROW);
+        let pickup = |weapon: &ItemStack, ammo: &ItemStack, creative: bool| {
+            let drawn = ProjectileWeaponItem::use_ammo(weapon, ammo, creative, false);
+            ProjectileWeaponItem::create_projectile(
+                world.clone(),
+                &shooter,
+                weapon,
+                &drawn,
+                false,
+                creative,
+            )
+            .pickup
+        };
+
+        assert_eq!(pickup(&bow, &arrow, false), ArrowPickup::Allowed);
+        assert_eq!(
+            pickup(&infinity_bow, &arrow, false),
+            ArrowPickup::CreativeOnly
+        );
+        assert_eq!(pickup(&bow, &arrow, true), ArrowPickup::CreativeOnly);
+        // Infinity only spares plain arrows: a spectral arrow is used up and can be picked up again
+        let spectral = ItemStack::new(1, &Item::SPECTRAL_ARROW);
+        assert_eq!(
+            pickup(&infinity_bow, &spectral, false),
+            ArrowPickup::Allowed
+        );
+
+        world.level.shutdown().await;
     }
 }
