@@ -97,6 +97,20 @@ impl gui::HostGui for PluginHostState {
         self.add(gui)
     }
 
+    async fn share(&mut self, res: Resource<Gui>) -> wasmtime::Result<Resource<Gui>> {
+        let shared = {
+            let gui = self.get(&res)?.lock().await;
+            PluginGui {
+                window_type: gui.window_type,
+                title: gui.title.clone(),
+                inventory: gui.inventory.clone(),
+                allow_grab_items: gui.allow_grab_items,
+                allow_put_items: gui.allow_put_items,
+            }
+        };
+        self.add(Arc::new(Mutex::new(shared)))
+    }
+
     async fn get_inventory(
         &mut self,
         res: Resource<Gui>,

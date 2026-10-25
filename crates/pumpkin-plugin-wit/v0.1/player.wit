@@ -994,6 +994,12 @@ interface player {
         /// Opens a GUI for the player.
         open-gui: func (gui-ref: gui);
 
+        /// Closes the screen (chest, GUI, ...) the player has open.
+        close-screen: func ();
+
+        /// Sends the player's inventory and cursor to the client again (after a cancelled click).
+        sync-inventory: func ();
+
         /// Bans the player with the specified options.
         ban: func (options: ban-player-options);
         /// Bans the player's IP address with the specified options.
