@@ -1518,8 +1518,8 @@ impl pumpkin::plugin::player::HostPlayer for PluginHostState {
         pitch: f32,
     ) -> wasmtime::Result<()> {
         let player = self.get(&player)?;
-        let sound_name = format!("{sound:?}").to_lowercase().replace('_', ".");
-        let sound_data = pumpkin_data::sound::Sound::from_name(&sound_name)
+        let sound_name = format!("{sound:?}");
+        let sound_data = pumpkin_wasm_host_common::sound::from_wit_debug_name(&sound_name)
             .ok_or_else(|| wasmtime::Error::msg(format!("Unknown sound: {sound_name}")))?;
         let internal_category = super::world::from_wit_sound_category(category);
         let pos = player.position();
@@ -1544,8 +1544,8 @@ impl pumpkin::plugin::player::HostPlayer for PluginHostState {
         pitch: f32,
     ) -> wasmtime::Result<()> {
         let player = self.get(&player)?;
-        let sound_name = format!("{sound:?}").to_lowercase().replace('_', ".");
-        let sound_data = pumpkin_data::sound::Sound::from_name(&sound_name)
+        let sound_name = format!("{sound:?}");
+        let sound_data = pumpkin_wasm_host_common::sound::from_wit_debug_name(&sound_name)
             .ok_or_else(|| wasmtime::Error::msg(format!("Unknown sound: {sound_name}")))?;
         let internal_category = super::world::from_wit_sound_category(category);
         player.play_sound(
