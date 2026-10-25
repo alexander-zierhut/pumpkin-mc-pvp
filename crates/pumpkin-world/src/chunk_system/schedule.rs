@@ -9,10 +9,8 @@ use super::{
     LevelChannel,
 };
 use crate::chunk::io::Dirtiable;
-use crate::level::{Level, LoadedChunkChange, SyncChunk};
-use dashmap::DashMap;
+use crate::level::{ChunkPosMap, Level, LoadedChunkChange, SyncChunk};
 use pumpkin_config::lighting::LightingEngineConfig;
-use pumpkin_util::math::vector2::Vector2;
 use slotmap::Key;
 use std::cmp::{Ordering, max};
 use std::collections::{BinaryHeap, HashMap};
@@ -55,7 +53,7 @@ pub struct GenerationSchedule {
     last_high_priority: Vec<ChunkPos>,
     send_level: Arc<LevelChannel>,
 
-    public_chunk_map: Arc<DashMap<Vector2<i32>, SyncChunk>>,
+    public_chunk_map: Arc<ChunkPosMap<SyncChunk>>,
     loaded_chunk_changes: Arc<crossbeam::queue::SegQueue<LoadedChunkChange>>,
     chunk_map: HashMap<ChunkPos, ChunkHolder>,
     unload_chunks: HashSetType<ChunkPos>,
