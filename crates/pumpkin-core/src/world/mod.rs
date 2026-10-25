@@ -1705,13 +1705,15 @@ impl World {
                 }
             }
         };
-        if let Some(islands) = islands {
+        let entity_work_nanos = if let Some(islands) = islands {
+            let work_nanos = std::sync::atomic::AtomicU64::new(0);
             islands
                 .islands
                 .par_iter()
                 .with_max_len(1)
                 .for_each(|island| {
                     let _guard = entity_handle.enter();
+                    let island_start = std::time::Instant::now();
                     for &index in island {
                         #[cfg(debug_assertions)]
                         entity_islands::enter(&islands, tickable[index].0.get_entity().entity_id);
@@ -1720,14 +1722,21 @@ impl World {
                     order::set_entity_order(None);
                     #[cfg(debug_assertions)]
                     entity_islands::leave();
+                    work_nanos.fetch_add(island_start.elapsed().as_nanos() as u64, Relaxed);
                 });
+            work_nanos.into_inner()
         } else {
             let _guard = entity_handle.enter();
             for index in 0..tickable.len() {
                 tick_entity(index);
             }
             order::set_entity_order(None);
-        }
+            t_entities.elapsed().as_nanos() as u64
+        };
+        self.island_schedule
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_work(entity_work_nanos);
         self.order_tick_spawns();
         let entity_elapsed = t_entities.elapsed();
 
