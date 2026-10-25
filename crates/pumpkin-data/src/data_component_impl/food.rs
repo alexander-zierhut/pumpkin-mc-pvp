@@ -1,8 +1,9 @@
 use super::Digest;
 use crate::data_component_impl::basic::SoundEvent;
 use crate::data_component_impl::{
-    DataComponentImpl, IDSet, IdOr, get_f32_hash, get_i32_hash, get_idor, get_idor_hash,
-    get_idset_hash, get_str_hash, put_idor,
+    DataComponentImpl, IDSet, IdOr, get_bool_hash, get_f32_hash, get_i32_hash, get_idor,
+    get_idor_hash, get_idset_hash, get_list_hash, get_map_hash, get_nbt_hash, get_str_hash,
+    put_idor,
 };
 use crate::effect::StatusEffect;
 use crate::item::Item;
@@ -91,15 +92,34 @@ impl StatusEffectInstance {
         NbtTag::Compound(compound)
     }
 
+    /// Vanilla `MobEffectInstance.CODEC`, which leaves out the details at their default.
     pub fn get_hash(&self) -> i32 {
-        let mut digest = Digest::new();
-        digest.update(&get_str_hash(self.effect_id.as_ref()).to_le_bytes());
-        digest.update(&get_i32_hash(self.amplifier).to_le_bytes());
-        digest.update(&get_i32_hash(self.duration).to_le_bytes());
-        digest.update(&[self.ambient as u8]);
-        digest.update(&[self.show_particles as u8]);
-        digest.update(&[self.show_icon as u8]);
-        digest.finalize() as i32
+        let id = if self.effect_id.contains(':') {
+            Cow::Borrowed(self.effect_id.as_ref())
+        } else {
+            Cow::Owned(format!("minecraft:{}", self.effect_id))
+        };
+        let mut entries = vec![
+            (get_str_hash("id"), get_str_hash(&id)),
+            (get_str_hash("show_icon"), get_bool_hash(self.show_icon)),
+        ];
+        if self.amplifier != 0 {
+            // `ExtraCodecs.UNSIGNED_BYTE`
+            entries.push((
+                get_str_hash("amplifier"),
+                get_nbt_hash(&NbtTag::Byte(self.amplifier as u8 as i8)),
+            ));
+        }
+        if self.duration != 0 {
+            entries.push((get_str_hash("duration"), get_i32_hash(self.duration)));
+        }
+        if self.ambient {
+            entries.push((get_str_hash("ambient"), get_bool_hash(true)));
+        }
+        if !self.show_particles {
+            entries.push((get_str_hash("show_particles"), get_bool_hash(false)));
+        }
+        get_map_hash(entries) as i32
     }
 }
 
@@ -363,17 +383,33 @@ impl DataComponentImpl for ConsumableImpl {
         NbtTag::Compound(compound)
     }
     fn get_hash(&self) -> i32 {
-        let mut digest = Digest::new();
-        digest.update(&[2u8]);
-        digest.update(&get_f32_hash(self.consume_seconds).to_le_bytes());
-        digest.update(&get_i32_hash(self.animation as i32).to_le_bytes());
-        digest.update(&get_idor_hash(&self.sound_event).to_be_bytes());
-        digest.update(&[self.consume_particles as u8]);
-        for effect in self.effects.iter() {
-            digest.update(&effect.get_hash().to_le_bytes());
+        // vanilla `Consumable.CODEC` leaves out the fields at their default
+        let mut entries = Vec::new();
+        if self.consume_seconds.to_bits() != 1.6f32.to_bits() {
+            entries.push((
+                get_str_hash("consume_seconds"),
+                get_f32_hash(self.consume_seconds),
+            ));
         }
-        digest.update(&[3u8]);
-        digest.finalize() as i32
+        if self.animation != ConsumeAnimation::Eat {
+            entries.push((
+                get_str_hash("animation"),
+                get_str_hash(self.animation.to_str()),
+            ));
+        }
+        if !matches!(self.sound_event, IdOr::Id(Sound::EntityGenericEat)) {
+            entries.push((get_str_hash("sound"), get_idor_hash(&self.sound_event)));
+        }
+        if !self.consume_particles {
+            entries.push((get_str_hash("has_consume_particles"), get_bool_hash(false)));
+        }
+        if !self.effects.is_empty() {
+            entries.push((
+                get_str_hash("on_consume_effects"),
+                get_list_hash(self.effects.iter().map(|effect| effect.get_hash() as u32)),
+            ));
+        }
+        get_map_hash(entries) as i32
     }
     default_impl!(Consumable);
 }
@@ -651,26 +687,34 @@ impl DataComponentImpl for PotionContentsImpl {
         NbtTag::Compound(compound)
     }
     fn get_hash(&self) -> i32 {
-        let mut digest = Digest::new();
-        if let Some(id) = self.potion_id {
-            digest.update(&[1u8]);
-            digest.update(&get_i32_hash(id).to_le_bytes());
+        // vanilla `PotionContents.FULL_CODEC`
+        let mut entries = Vec::new();
+        if let Some(potion) = self
+            .potion_id
+            .and_then(|id| crate::potion::Potion::from_id(id as u8))
+        {
+            entries.push((
+                get_str_hash("potion"),
+                get_str_hash(&format!("minecraft:{}", potion.name)),
+            ));
         }
         if let Some(color) = self.custom_color {
-            digest.update(&[2u8]);
-            digest.update(&get_i32_hash(color).to_le_bytes());
-        }
-        if let Some(name) = &self.custom_name {
-            digest.update(&[3u8]);
-            digest.update(&get_str_hash(name).to_le_bytes());
+            entries.push((get_str_hash("custom_color"), get_i32_hash(color)));
         }
         if !self.custom_effects.is_empty() {
-            digest.update(&[4u8]);
-            for effect in &self.custom_effects {
-                digest.update(&effect.get_hash().to_le_bytes());
-            }
+            entries.push((
+                get_str_hash("custom_effects"),
+                get_list_hash(
+                    self.custom_effects
+                        .iter()
+                        .map(|effect| effect.get_hash() as u32),
+                ),
+            ));
         }
-        digest.finalize() as i32
+        if let Some(name) = &self.custom_name {
+            entries.push((get_str_hash("custom_name"), get_str_hash(name)));
+        }
+        get_map_hash(entries) as i32
     }
     default_impl!(PotionContents);
 }

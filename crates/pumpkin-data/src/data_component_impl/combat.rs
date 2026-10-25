@@ -6,7 +6,7 @@ use crate::damage::DamageType;
 use crate::data_component_impl::basic::SoundEvent;
 use crate::data_component_impl::{
     DataComponentImpl, EquipmentSlot, IDSet, IdOr, get_f32_hash, get_i32_hash, get_idor,
-    get_idor_hash, get_idset_hash, get_str_hash, put_idor,
+    get_idor_hash, get_idset_hash, get_map_hash, get_str_hash, put_idor,
 };
 use crate::entity_type::EntityType;
 use crate::item::Item;
@@ -88,16 +88,6 @@ impl DataComponentImpl for EnchantmentsImpl {
             data.put_int(enc.name, *level);
         }
         NbtTag::Compound(data)
-    }
-    fn get_hash(&self) -> i32 {
-        let mut digest = Digest::new();
-        digest.update(&[2u8]);
-        for (enc, level) in self.enchantment.iter() {
-            digest.update(&get_str_hash(enc.name).to_le_bytes());
-            digest.update(&get_i32_hash(*level).to_le_bytes());
-        }
-        digest.update(&[3u8]);
-        digest.finalize() as i32
     }
     default_impl!(Enchantments);
 }
@@ -597,11 +587,22 @@ impl DataComponentImpl for AttackRangeImpl {
         NbtTag::Compound(compound)
     }
     fn get_hash(&self) -> i32 {
-        let mut digest = Digest::new();
-        for value in self.values() {
-            digest.update(&get_f32_hash(value).to_le_bytes());
-        }
-        digest.finalize() as i32
+        // vanilla `AttackRange.CODEC` leaves out the fields at their default
+        const FIELDS: [(&str, f32); 6] = [
+            ("min_reach", 0.0),
+            ("max_reach", 3.0),
+            ("min_creative_reach", 0.0),
+            ("max_creative_reach", 5.0),
+            ("hitbox_margin", 0.3),
+            ("mob_factor", 1.0),
+        ];
+        get_map_hash(
+            FIELDS
+                .iter()
+                .zip(self.values())
+                .filter(|((_, default), value)| value.to_bits() != default.to_bits())
+                .map(|((name, _), value)| (get_str_hash(name), get_f32_hash(value))),
+        ) as i32
     }
     default_impl!(AttackRange);
 }
@@ -1228,16 +1229,6 @@ impl DataComponentImpl for StoredEnchantmentsImpl {
             data.put_int(enc.name, *level);
         }
         NbtTag::Compound(data)
-    }
-    fn get_hash(&self) -> i32 {
-        let mut digest = Digest::new();
-        digest.update(&[2u8]);
-        for (enc, level) in self.enchantment.iter() {
-            digest.update(&get_str_hash(enc.name).to_le_bytes());
-            digest.update(&get_i32_hash(*level).to_le_bytes());
-        }
-        digest.update(&[3u8]);
-        digest.finalize() as i32
     }
     default_impl!(StoredEnchantments);
 }
