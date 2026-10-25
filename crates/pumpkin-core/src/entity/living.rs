@@ -3497,17 +3497,20 @@ impl LivingEntity {
                 let dz = source_pos.z - target_pos.z;
                 if let Some(cfg) = &legacy {
                     if !damage_type.has_tag(&tag::DamageType::MINECRAFT_NO_KNOCKBACK) {
-                        // 1.8 `EntityLivingBase.knockBack`; a player's own motion is client side,
-                        // so its 1.8 server motion is reconstructed from the movement packets.
-                        let motion = caller.get_player().map_or_else(
+                        // 1.8 `EntityLivingBase.knockBack`; a player moves client side, so it
+                        // starts from the motion the 1.8 server keeps for it and sets that motion
+                        // (a melee hit restores it afterwards, `Player::legacy_attack`).
+                        let player = caller.get_player();
+                        let motion = player.map_or_else(
                             || self.entity.velocity.load(),
                             super::player::Player::legacy_motion,
                         );
-                        self.entity
-                            .velocity
-                            .store(crate::entity::legacy_combat::base_knockback(
-                                motion, dx, dz, cfg,
-                            ));
+                        let knockback =
+                            crate::entity::legacy_combat::base_knockback(motion, dx, dz, cfg);
+                        if let Some(player) = player {
+                            player.legacy_server_motion.store(knockback);
+                        }
+                        self.entity.velocity.store(knockback);
                         self.entity.velocity_dirty.store(true, SeqCst);
                     }
                 } else {
