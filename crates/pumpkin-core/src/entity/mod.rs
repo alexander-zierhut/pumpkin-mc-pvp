@@ -665,12 +665,16 @@ pub trait EntityBase: Send + Sync + std::any::Any {
             dx *= PUSH_STRENGTH;
             dz *= PUSH_STRENGTH;
 
+            // Vanilla `push(x, y, z)` only marks the motion for the other viewers (`needsSync`). A player pushes
+            // itself away on its own client; a velocity packet to it (`velocity_dirty`) would hit it like a punch.
             if !self_entity.has_passengers() && self.is_pushable() {
                 let mut vel = self_entity.velocity.load();
                 vel.x -= dx;
                 vel.z -= dz;
                 self_entity.velocity.store(vel);
-                self_entity.velocity_dirty.store(true, Ordering::SeqCst);
+                if self.get_player().is_none() {
+                    self_entity.velocity_dirty.store(true, Ordering::SeqCst);
+                }
             }
 
             if !other_entity.has_passengers() && entity.is_pushable() {
@@ -678,7 +682,9 @@ pub trait EntityBase: Send + Sync + std::any::Any {
                 vel.x += dx;
                 vel.z += dz;
                 other_entity.velocity.store(vel);
-                other_entity.velocity_dirty.store(true, Ordering::SeqCst);
+                if entity.get_player().is_none() {
+                    other_entity.velocity_dirty.store(true, Ordering::SeqCst);
+                }
             }
         }
     }
