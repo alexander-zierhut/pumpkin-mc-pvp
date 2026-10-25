@@ -1521,6 +1521,13 @@ impl World {
 
     #[expect(clippy::too_many_lines)]
     pub fn tick(self: &Arc<Self>, server: &Arc<Server>) {
+        /// Below twice these sizes the loops run on the calling thread: waking idle Rayon workers
+        /// for a few microseconds of work costs more than the work, because the woken workers
+        /// spin (`sched_yield`) looking for more before they sleep again.
+        const PLAYER_TICK_MIN_LEN: usize = 8;
+        const ENTITY_FILTER_MIN_LEN: usize = 1024;
+        /// In batches of 16 block entities.
+        const BLOCK_ENTITY_MIN_BATCHES: usize = 4;
         let start = std::time::Instant::now();
 
         self.flush_block_updates();
@@ -1556,7 +1563,7 @@ impl World {
         let players = self.players.load();
         let player_count = players.len();
         let players_cache: Vec<_> = players
-            .par_iter()
+            .iter()
             .map(|player| {
                 let entity = player.get_entity();
                 let pos = entity.pos.load();
@@ -1571,10 +1578,13 @@ impl World {
 
         let t_players = std::time::Instant::now();
         let player_handle = handle.clone();
-        players.par_iter().for_each(|player| {
-            let _guard = player_handle.enter();
-            player.tick(server);
-        });
+        players
+            .par_iter()
+            .with_min_len(PLAYER_TICK_MIN_LEN)
+            .for_each(|player| {
+                let _guard = player_handle.enter();
+                player.tick(server);
+            });
         let player_elapsed = t_players.elapsed();
 
         let entities_to_tick = self.entities.load();
@@ -1590,6 +1600,7 @@ impl World {
         let t_entities = std::time::Instant::now();
         let tickable: Vec<_> = entities_to_tick
             .par_iter()
+            .with_min_len(ENTITY_FILTER_MIN_LEN)
             .filter_map(|entity| {
                 let entity_pos = entity.get_entity().pos.load();
                 let entity_chunk = Vector2::new(
@@ -1740,12 +1751,15 @@ impl World {
 
         let t_be = std::time::Instant::now();
         let be_handle = handle;
-        block_entities.par_chunks(16).for_each(|batch| {
-            let _guard = be_handle.enter();
-            for be in batch {
-                be.tick(self);
-            }
-        });
+        block_entities
+            .par_chunks(16)
+            .with_min_len(BLOCK_ENTITY_MIN_BATCHES)
+            .for_each(|batch| {
+                let _guard = be_handle.enter();
+                for be in batch {
+                    be.tick(self);
+                }
+            });
         // Drained after all ticks, so changes (hopper -> chest) land in the same tick.
         let guard = be_handle.enter();
         self.flush_comparator_updates(&block_entities);
@@ -2075,6 +2089,8 @@ impl World {
     #[expect(clippy::too_many_lines)]
     pub fn tick_chunks(self: &Arc<Self>, server: &Arc<Server>) {
         const BATCH_SIZE: usize = 32;
+        /// Below twice this many batches the ticks run on the calling thread (see `World::tick`).
+        const MIN_BATCHES: usize = 4;
         const INHABITED_TIME_BATCH_SIZE: usize = 1024;
         let random_tick_speed = self.level_info.load().game_rules.random_tick_speed;
 
@@ -2092,6 +2108,7 @@ impl World {
         tick_data
             .block_ticks
             .par_chunks(BATCH_SIZE)
+            .with_min_len(MIN_BATCHES)
             .for_each(|batch| {
                 let _guard = block_handle.enter();
                 let world = world.clone();
@@ -2114,6 +2131,7 @@ impl World {
         tick_data
             .fluid_ticks
             .par_chunks(BATCH_SIZE)
+            .with_min_len(MIN_BATCHES)
             .for_each(|batch| {
                 let _guard = fluid_handle.enter();
                 let world = world.clone();
@@ -2132,6 +2150,7 @@ impl World {
         tick_data
             .random_ticks
             .par_chunks(BATCH_SIZE)
+            .with_min_len(MIN_BATCHES)
             .for_each(|batch| {
                 let _guard = random_handle.enter();
                 let world = world.clone();
