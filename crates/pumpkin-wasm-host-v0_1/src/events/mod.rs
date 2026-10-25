@@ -342,13 +342,22 @@ impl WasmPluginEventHandler {
 }
 
 impl<E: Payload + ToFromWasmEvent + Clone + 'static> EventHandler<E> for WasmPluginEventHandler {
+    /// A non-blocking handler cannot change the event, so the guest call runs as its own task: the
+    /// caller (often the tick thread, e.g. for every player move) does not wait for the plugin.
     fn handle<'a>(&'a self, server: &'a Arc<Server>, event: &'a E) -> BoxFuture<'a, ()> {
-        Box::pin(async {
-            let pending = Box::new(NotifiedEvent(event.clone()));
-            if let Err(error) = self.dispatch(server.clone(), pending).await {
-                tracing::error!(handler_id = self.handler_id, %error, "Wasm event handler failed");
+        let handler = Self {
+            handler_id: self.handler_id,
+            plugin: self.plugin.clone(),
+            handle_event: self.handle_event.clone(),
+        };
+        let pending = Box::new(NotifiedEvent(event.clone()));
+        let server = server.clone();
+        drop(tokio::spawn(async move {
+            if let Err(error) = handler.dispatch(server, pending).await {
+                tracing::error!(handler_id = handler.handler_id, %error, "Wasm event handler failed");
             }
-        })
+        }));
+        Box::pin(async {})
     }
 
     fn handle_blocking<'a>(
