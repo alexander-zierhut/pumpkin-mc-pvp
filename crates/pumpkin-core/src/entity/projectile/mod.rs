@@ -32,12 +32,14 @@ use pumpkin_data::item_stack::ItemStack;
 #[must_use]
 pub fn is_projectile(entity_type: &EntityType) -> bool {
     *entity_type == EntityType::ARROW
+        || *entity_type == EntityType::SPECTRAL_ARROW
         || *entity_type == EntityType::TRIDENT
         || *entity_type == EntityType::EGG
         || *entity_type == EntityType::SNOWBALL
         || *entity_type == EntityType::EXPERIENCE_BOTTLE
         || *entity_type == EntityType::FIREWORK_ROCKET
         || *entity_type == EntityType::WIND_CHARGE
+        || *entity_type == EntityType::BREEZE_WIND_CHARGE
         || *entity_type == EntityType::SPLASH_POTION
         || *entity_type == EntityType::LINGERING_POTION
         || *entity_type == EntityType::ENDER_PEARL
@@ -73,11 +75,88 @@ pub fn apply_on_projectile_spawned(
     }
 }
 
+/// The topmost vehicle of `entity`, or the entity itself (vanilla `getRootVehicle`).
+fn root_vehicle(entity: Arc<dyn EntityBase>) -> Arc<dyn EntityBase> {
+    let mut root = entity;
+    while let Some(vehicle) = root.get_entity().get_vehicle() {
+        root = vehicle;
+    }
+    root
+}
+
+/// `entity` and everything riding it, directly or indirectly (vanilla `getSelfAndPassengers`).
+fn self_and_passengers(entity: Arc<dyn EntityBase>, out: &mut Vec<Arc<dyn EntityBase>>) {
+    let passengers = entity
+        .get_entity()
+        .passengers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    out.push(entity);
+    for passenger in passengers {
+        self_and_passengers(passenger, out);
+    }
+}
+
+/// Vanilla `Projectile.isOutsideOwnerCollisionRange`: the projectile box, stretched along this tick's motion and
+/// grown by one block, touches nothing in the owner's vehicle tree (the owner, its vehicles and their passengers).
+fn is_outside_owner_collision_range(projectile: &Entity, owner: Arc<dyn EntityBase>) -> bool {
+    let motion = projectile.velocity.load();
+    let range = projectile
+        .bounding_box
+        .load()
+        .expand_towards(motion.x, motion.y, motion.z)
+        .expand_all(1.0);
+    let mut tree = Vec::new();
+    self_and_passengers(root_vehicle(owner), &mut tree);
+    // `EntitySelector.CAN_BE_PICKED`: spectators do not count
+    !tree.iter().any(|entity| {
+        !entity.is_spectator() && entity.get_entity().bounding_box.load().intersects(&range)
+    })
+}
+
+/// Vanilla `Projectile.checkLeftOwner`, once per tick before the hit checks: `left_owner` latches as soon as the
+/// projectile is outside its owner's collision range (an owner that is gone counts as left).
+pub fn check_left_owner(left_owner: &AtomicBool, projectile: &Entity, owner_id: Option<i32>) {
+    if left_owner.load(Ordering::Relaxed) {
+        return;
+    }
+    let owner = owner_id.and_then(|id| projectile.world.load().get_entity_by_id(id));
+    let left = owner.is_none_or(|owner| is_outside_owner_collision_range(projectile, owner));
+    left_owner.store(left, Ordering::Relaxed);
+}
+
+/// Whether a projectile skips its own owner: until it left the owner (vanilla `canHitEntity`: the owner rides in its
+/// own vehicle tree), so a shot straight up can come down on the shooter.
+pub fn skips_owner(left_owner: &AtomicBool, owner_id: Option<i32>, target: &Entity) -> bool {
+    owner_id == Some(target.entity_id) && !left_owner.load(Ordering::Relaxed)
+}
+
+/// The owner part of vanilla `Projectile.canHitEntity` (`owner.isPassengerOfSameVehicle(entity)`).
+///
+/// Until the projectile left its owner it cannot hit anything riding in the owner's vehicle tree, such as a mob sitting on
+/// the shooter's head. The owner itself is decided by [`skips_owner`].
+pub fn rides_with_owner(
+    left_owner: &AtomicBool,
+    projectile: &Entity,
+    owner_id: Option<i32>,
+    target: &Entity,
+) -> bool {
+    if left_owner.load(Ordering::Relaxed) || owner_id.is_none_or(|id| id == target.entity_id) {
+        return false;
+    }
+    owner_id
+        .and_then(|id| projectile.world.load().get_entity_by_id(id))
+        .is_some_and(|owner| owner.get_entity().root_vehicle_id() == target.root_vehicle_id())
+}
+
 pub struct ThrownItemEntity {
     pub entity: Entity,
     pub owner_id: Option<i32>,
     pub collides_with_projectiles: bool,
     pub has_hit: AtomicBool,
+    /// Vanilla `Projectile.leftOwner`, see [`check_left_owner`].
+    pub left_owner: AtomicBool,
     pub gravity: f64,
 }
 
@@ -91,6 +170,7 @@ impl ThrownItemEntity {
             owner_id: Some(owner.entity_id),
             collides_with_projectiles: false,
             has_hit: AtomicBool::new(false),
+            left_owner: AtomicBool::new(false),
             gravity,
         }
     }
@@ -142,6 +222,7 @@ impl ThrownItemEntity {
         let world = entity.world.load();
 
         entity.update_last_pos();
+        check_left_owner(&self.left_owner, entity, self.owner_id);
 
         // Apply gravity and inertia
         let mut velocity = entity.velocity.load();
@@ -213,7 +294,7 @@ impl ThrownItemEntity {
         }
 
         // Entity collisions
-        let candidates = world.get_entities_at_box(&search_box);
+        let candidates = world.get_all_at_box(&search_box);
         for cand in candidates {
             if self.should_skip_collision(entity, &cand) {
                 continue;
@@ -263,10 +344,16 @@ impl ThrownItemEntity {
             return true;
         }
 
-        // Skip owner for initial frames
-        if Some(other_ent.entity_id) == self.owner_id
-            && self_ent.tick_count.load(Ordering::Relaxed) < 5
-        {
+        // Spectators are never hit (vanilla `EntitySelector.NO_SPECTATORS`)
+        if other.is_spectator() {
+            return true;
+        }
+
+        if skips_owner(&self.left_owner, self.owner_id, other_ent) {
+            return true;
+        }
+
+        if rides_with_owner(&self.left_owner, self_ent, self.owner_id, other_ent) {
             return true;
         }
 
@@ -384,5 +471,91 @@ impl ProjectileHit {
             Self::Block { face, .. } => Some(*face),
             Self::Entity { .. } => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use pumpkin_data::entity::EntityType;
+    use pumpkin_util::math::vector3::Vector3;
+
+    use super::{check_left_owner, rides_with_owner};
+    use crate::entity::passive::{chicken::ChickenEntity, sheep::SheepEntity};
+    use crate::entity::{Entity, EntityBase, ai::test_support::world};
+
+    /// A shooter with a chicken on its head (a parachute in minigames): an arrow starting inside the chicken must not
+    /// hit it, but once the arrow is out of reach the owner's passengers are fair game again (vanilla
+    /// `canHitEntity` / `checkLeftOwner`).
+    #[tokio::test]
+    async fn projectiles_spare_what_rides_with_the_owner_until_they_left_it() {
+        let folder = tempfile::tempdir().unwrap();
+        let world = world(&folder);
+        let shooter = SheepEntity::new(Entity::new(
+            world.clone(),
+            Vector3::new(0.5, 64.0, 0.5),
+            &EntityType::SHEEP,
+        ));
+        let parachute = ChickenEntity::new(Entity::new(
+            world.clone(),
+            Vector3::new(0.5, 65.3, 0.5),
+            &EntityType::CHICKEN,
+        ));
+        let stranger = ChickenEntity::new(Entity::new(
+            world.clone(),
+            Vector3::new(0.5, 65.3, 2.5),
+            &EntityType::CHICKEN,
+        ));
+        world.spawn_entity(shooter.clone());
+        shooter
+            .get_entity()
+            .add_passenger(shooter.clone(), parachute.clone());
+
+        let arrow = Entity::new(
+            world.clone(),
+            Vector3::new(0.5, 65.0, 0.5),
+            &EntityType::ARROW,
+        );
+        arrow.velocity.store(Vector3::new(0.0, 0.0, 3.0));
+        let owner = Some(shooter.get_entity().entity_id);
+        let left_owner = AtomicBool::new(false);
+
+        check_left_owner(&left_owner, &arrow, owner);
+        assert!(!left_owner.load(Ordering::Relaxed));
+        assert!(rides_with_owner(
+            &left_owner,
+            &arrow,
+            owner,
+            parachute.get_entity()
+        ));
+        assert!(!rides_with_owner(
+            &left_owner,
+            &arrow,
+            owner,
+            stranger.get_entity()
+        ));
+        // the owner itself is decided by `skips_owner`
+        assert!(!rides_with_owner(
+            &left_owner,
+            &arrow,
+            owner,
+            shooter.get_entity()
+        ));
+
+        // one tick later the arrow is 3 blocks ahead: it left the owner for good, even when it comes back
+        arrow.set_pos(Vector3::new(0.5, 65.0, 3.5));
+        check_left_owner(&left_owner, &arrow, owner);
+        assert!(left_owner.load(Ordering::Relaxed));
+        arrow.set_pos(Vector3::new(0.5, 65.0, 0.5));
+        check_left_owner(&left_owner, &arrow, owner);
+        assert!(!rides_with_owner(
+            &left_owner,
+            &arrow,
+            owner,
+            parachute.get_entity()
+        ));
+
+        world.level.shutdown().await;
     }
 }

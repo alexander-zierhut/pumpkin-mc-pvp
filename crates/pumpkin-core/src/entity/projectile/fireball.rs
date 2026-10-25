@@ -38,6 +38,7 @@ impl FireballEntity {
             owner_id: None,
             collides_with_projectiles: false,
             has_hit: AtomicBool::new(false),
+            left_owner: AtomicBool::new(false),
             gravity: 0.0,
         };
 
@@ -75,6 +76,7 @@ impl FireballEntity {
             owner_id: None,
             collides_with_projectiles: false,
             has_hit: AtomicBool::new(false),
+            left_owner: AtomicBool::new(false),
             gravity: 0.0,
         };
         let vel = direction.normalize().multiply(

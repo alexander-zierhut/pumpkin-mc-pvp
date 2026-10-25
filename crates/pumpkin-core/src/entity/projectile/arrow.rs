@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
-use crate::entity::projectile::{ProjectileHit, calculate_ray_intersection};
+use crate::entity::projectile::{
+    ProjectileHit, calculate_ray_intersection, check_left_owner, rides_with_owner, skips_owner,
+};
 use crate::{
     entity::{Entity, EntityBase, living::LivingEntity, player::Player},
     server::Server,
@@ -66,6 +68,8 @@ pub struct ArrowEntity {
     pub life: AtomicU32,
     pub shake_time: AtomicU8,
     pub has_hit: AtomicBool,
+    /// Vanilla `Projectile.leftOwner`, see [`check_left_owner`].
+    pub left_owner: AtomicBool,
     pub last_block_pos: Arc<std::sync::RwLock<Option<BlockPos>>>,
     pub pierced_entities: Arc<RwLock<Vec<i32>>>,
     pub weapon: RwLock<Option<ItemStack>>,
@@ -105,6 +109,7 @@ impl ArrowEntity {
             life: AtomicU32::new(0),
             shake_time: AtomicU8::new(0),
             has_hit: AtomicBool::new(false),
+            left_owner: AtomicBool::new(false),
             last_block_pos: Arc::new(std::sync::RwLock::new(None)),
             pierced_entities: Arc::new(RwLock::new(Vec::new())),
             weapon: RwLock::new(None),
@@ -147,6 +152,7 @@ impl ArrowEntity {
             life: AtomicU32::new(0),
             shake_time: AtomicU8::new(0),
             has_hit: AtomicBool::new(false),
+            left_owner: AtomicBool::new(false),
             last_block_pos: Arc::new(std::sync::RwLock::new(None)),
             pierced_entities: Arc::new(RwLock::new(Vec::new())),
             weapon: RwLock::new(None),
@@ -643,6 +649,7 @@ impl EntityBase for ArrowEntity {
             velocity.x.atan2(velocity.z) as f32 * 57.295_776,
             velocity.y.atan2(len) as f32 * 57.295_776,
         );
+        check_left_owner(&self.left_owner, entity, self.owner_id);
 
         // Move arrow
         let new_pos = start_pos.add(&velocity);
@@ -1060,10 +1067,11 @@ impl ArrowEntity {
             return true;
         }
 
-        // Skip owner for initial frames (5 ticks)
-        if Some(other_ent.entity_id) == self.owner_id
-            && self_ent.tick_count.load(Ordering::Relaxed) < 5
-        {
+        if skips_owner(&self.left_owner, self.owner_id, other_ent) {
+            return true;
+        }
+
+        if rides_with_owner(&self.left_owner, self_ent, self.owner_id, other_ent) {
             return true;
         }
 
