@@ -303,7 +303,7 @@ impl JavaClient {
             }
 
             'cancelled: {
-                self.force_tp(player, position);
+                self.force_tp(player, player.get_entity().pos.load());
             }
         }}
     }
@@ -315,9 +315,10 @@ impl JavaClient {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) =
             Some((teleport_id.into(), position));
+        // The confirm puts the player at the awaited position, so the client has to be sent the same one.
         player.try_send_client_packet(&CPlayerPosition::new(
             teleport_id.into(),
-            player.get_entity().pos.load(),
+            position,
             Vector3::new(0.0, 0.0, 0.0),
             player.get_entity().yaw.load(),
             player.get_entity().pitch.load(),
