@@ -665,6 +665,8 @@ pub trait EntityBase: Send + Sync + std::any::Any {
             dx *= PUSH_STRENGTH;
             dz *= PUSH_STRENGTH;
 
+            // Vanilla `push(x, y, z)` only marks the motion for the viewers (`needsSync`); a pushed player
+            // pushes itself away on its own client (see `Entity::send_velocity_to_watchers`).
             if !self_entity.has_passengers() && self.is_pushable() {
                 let mut vel = self_entity.velocity.load();
                 vel.x -= dx;
@@ -1060,6 +1062,9 @@ pub struct Entity {
     pub movement_multiplier: AtomicCell<Vector3<f64>>,
     /// Vanilla `needsSync`: tracker resyncs position and velocity of entities
     pub velocity_dirty: AtomicBool,
+    /// Vanilla `syncVelocity`, set by `markHurt`: the entity's own client gets its motion once, at the end of
+    /// its tick. The only motion packet a player gets about itself; `velocity_dirty` reaches the viewers only.
+    pub sync_velocity: AtomicBool,
     /// Set when an Entity is to be removed but could still be referenced
     pub removed: AtomicBool,
     /// The last sent yaw value (encoded as u8) for change detection
@@ -1254,6 +1259,7 @@ impl Entity {
             synched_data: synched_entity_data::SynchedEntityData::new(),
             movement_multiplier: AtomicCell::new(Vector3::default()),
             velocity_dirty: AtomicBool::new(true),
+            sync_velocity: AtomicBool::new(false),
             removed: AtomicBool::new(false),
             last_sent_yaw: AtomicU8::new(0),
             last_sent_pitch: AtomicU8::new(0),
@@ -1459,21 +1465,35 @@ impl Entity {
         self.set_synced_data(tracked_data::entity::DATA_NO_GRAVITY, no_gravity);
     }
 
-    /// Vanilla `hurtMarked` path: immediate, to watchers and self.
+    /// Vanilla `syncVelocity` path: immediate, to watchers and self.
     pub fn send_velocity(&self) {
-        let velocity = self.velocity.load();
-        self.last_sent_velocity.store(velocity);
+        let (java, bedrock) = self.velocity_packets();
         self.world
             .load()
-            .send_to_tracking_players_and_self_editioned(
-                self,
-                &CEntityVelocity::new(self.entity_id.into(), velocity),
-                &CSetActorMotion {
-                    target_runtime_id: VarULong(self.entity_id as u64),
-                    motion: Vector3::new(velocity.x as f32, velocity.y as f32, velocity.z as f32),
-                    tick: VarULong(0),
-                },
-            );
+            .send_to_tracking_players_and_self_editioned(self, &java, &bedrock);
+    }
+
+    /// Vanilla `needsSync` path (`ServerEntity.sendChanges`): to watchers only. A player is never sent its own
+    /// motion this way; it moves itself on its client, and an echo of the server's copy would push it around.
+    pub fn send_velocity_to_watchers(&self) {
+        let (java, bedrock) = self.velocity_packets();
+        self.world
+            .load()
+            .send_to_tracking_players_editioned(self, &java, &bedrock);
+    }
+
+    /// The Java and Bedrock motion packets for the current velocity, recorded as the last velocity sent.
+    fn velocity_packets(&self) -> (CEntityVelocity, CSetActorMotion) {
+        let velocity = self.velocity.load();
+        self.last_sent_velocity.store(velocity);
+        (
+            CEntityVelocity::new(self.entity_id.into(), velocity),
+            CSetActorMotion {
+                target_runtime_id: VarULong(self.entity_id as u64),
+                motion: Vector3::new(velocity.x as f32, velocity.y as f32, velocity.z as f32),
+                tick: VarULong(0),
+            },
+        )
     }
 
     #[must_use]

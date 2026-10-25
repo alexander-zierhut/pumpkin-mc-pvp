@@ -3469,6 +3469,11 @@ impl LivingEntity {
         );
 
         self.no_action_time.store(0, Relaxed);
+        // Vanilla `hurtServer` calls `markHurt` for a hit that lands in full (`play_sound` here, the other branch
+        // is the reduced hit inside the hurt cooldown).
+        if play_sound && !damage_type.has_tag(&tag::DamageType::MINECRAFT_NO_IMPACT) {
+            self.entity.sync_velocity.store(true, SeqCst);
+        }
         if play_sound {
             if let Some(sound) = caller.get_mob().and_then(|mob| mob.as_custom_sound()) {
                 sound.on_hurt_sound();
@@ -3708,8 +3713,12 @@ impl EntityBase for LivingEntity {
             self.entity.tick_frozen(caller);
         }
 
-        // Coalesce velocity sends to once per tick.
+        // Coalesce velocity sends to once per tick: `needsSync` to the viewers, then the one-shot
+        // `syncVelocity` of a hit (after the whole tick, so the knockback is in it) to the entity too.
         if self.entity.velocity_dirty.swap(false, Ordering::SeqCst) {
+            self.entity.send_velocity_to_watchers();
+        }
+        if self.entity.sync_velocity.swap(false, Ordering::SeqCst) {
             self.entity.send_velocity();
         }
 

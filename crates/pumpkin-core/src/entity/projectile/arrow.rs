@@ -959,6 +959,10 @@ impl EntityBase for ArrowEntity {
                             .swap(false, Ordering::SeqCst)
                     {
                         target.get_entity().send_velocity();
+                        target
+                            .get_entity()
+                            .sync_velocity
+                            .store(false, Ordering::SeqCst);
                         // unlike a melee hit, 1.8 keeps an arrow's knockback (and Punch) in the server motion
                         player
                             .legacy_server_motion
