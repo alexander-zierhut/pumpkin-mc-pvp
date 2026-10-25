@@ -618,6 +618,9 @@ impl EntityBase for ArrowEntity {
                     vel.y *= rand::random::<f64>() * 0.2;
                     vel.z *= rand::random::<f64>() * 0.2;
                     entity.velocity.store(vel);
+                    // vanilla `startFalling`: the despawn timer starts over
+                    self.life.store(0, Ordering::Relaxed);
+                    return;
                 }
             }
 

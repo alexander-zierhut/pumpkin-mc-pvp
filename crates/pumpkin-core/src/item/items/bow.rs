@@ -6,6 +6,7 @@ use crate::entity::player::Player;
 use crate::entity::projectile::arrow::ArrowEntity;
 use crate::item::items::projectile_weapon::ProjectileWeaponItem;
 use crate::item::{ItemBehaviour, ItemMetadata};
+use pumpkin_data::data_component::DataComponent;
 use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::sound::{Sound, SoundCategory};
@@ -86,20 +87,18 @@ impl BowItem {
                 stack.copy_with_count(1)
             },
         );
-        let infinite_projectile = projectile.item.id == Item::ARROW.id;
+        // Vanilla `ProjectileWeaponItem.useAmmo`: Infinity (on plain arrows) and creative use no ammo and mark the
+        // shot arrow intangible, so nobody but a creative player can pick it up
+        let projectile = ProjectileWeaponItem::use_ammo(
+            weapon,
+            &projectile,
+            gamemode == GameMode::Creative,
+            false,
+        );
+        let ammo_used = !projectile.has_data_component(DataComponent::IntangibleProjectile);
 
         // Calculate power and fire
         let power = Self::get_power_for_time(use_ticks);
-
-        // Check for Infinity enchantment
-        let has_infinity = weapon
-            .get_data_component::<pumpkin_data::data_component_impl::EnchantmentsImpl>()
-            .is_some_and(|enchantments| {
-                enchantments
-                    .enchantment
-                    .iter()
-                    .any(|(e, _)| **e == pumpkin_data::Enchantment::INFINITY)
-            });
 
         let is_crit = (power - 1.0).abs() < f32::EPSILON;
         Self::shoot(
@@ -111,10 +110,8 @@ impl BowItem {
             is_crit,
         );
 
-        // Consume arrow (if not creative and no Infinity)
         if let Some(slot) = arrow_slot
-            && gamemode != GameMode::Creative
-            && !(has_infinity && infinite_projectile)
+            && ammo_used
         {
             player.consume_arrow(slot);
         }
