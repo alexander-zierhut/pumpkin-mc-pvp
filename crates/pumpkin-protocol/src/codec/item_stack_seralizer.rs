@@ -750,53 +750,40 @@ impl OptionalItemStackHash {
         Ok(())
     }
 
+    /// Vanilla `HashedStack.matches`, on the patch as the client keeps it.
     #[must_use]
     pub fn hash_equals(&self, other: &ItemStack) -> bool {
-        if let Some(hash) = &self.0 {
-            if hash.item_id != other.item.id.into() || hash.count != other.item_count.into() {
-                return false;
-            }
-            let calc = || {
-                let mut to_add = 0u8;
-                let mut to_remove = 0u8;
-                for (_id, data) in &other.patch {
-                    if data.is_none() {
-                        to_remove += 1;
-                    } else {
-                        to_add += 1;
-                    }
-                }
-                (to_add, to_remove)
-            };
-            let (to_add, to_remove) = calc();
-            if to_add as usize != hash.components.added.len()
-                || to_remove as usize != hash.components.removed.len()
-            {
-                return false;
-            }
-            for (other_id, data) in &other.patch {
-                if let Some(data) = data {
-                    let checksum = data.get_hash();
-                    for (id, hash) in &hash.components.added {
-                        if id == &VarInt::from(other_id.to_id()) {
-                            if hash == &checksum {
-                                break;
-                            }
-                            return false;
-                        }
-                    }
-                } else if !hash
-                    .components
-                    .removed
-                    .contains(&VarInt::from(other_id.to_id()))
-                {
-                    return false;
-                }
-            }
-            true
-        } else {
-            other.is_empty()
+        let Some(hash) = &self.0 else {
+            return other.is_empty();
+        };
+        if other.is_empty()
+            || hash.item_id != other.item.id.into()
+            || hash.count != other.item_count.into()
+        {
+            return false;
         }
+        let (mut added, mut removed) = (0, 0);
+        for (id, data) in other.sanitized_patch() {
+            let id = VarInt::from(id.to_id());
+            let matches = data.as_ref().map_or_else(
+                || {
+                    removed += 1;
+                    hash.components.removed.contains(&id)
+                },
+                |data| {
+                    added += 1;
+                    let checksum = data.get_hash();
+                    hash.components
+                        .added
+                        .iter()
+                        .any(|(hash_id, hash)| *hash_id == id && *hash == checksum)
+                },
+            );
+            if !matches {
+                return false;
+            }
+        }
+        added == hash.components.added.len() && removed == hash.components.removed.len()
     }
 }
 
@@ -852,5 +839,76 @@ impl From<Option<ItemStack>> for ItemStackOptionalTemplateSerializer<'_> {
             || ItemStackOptionalTemplateSerializer(Cow::Borrowed(ItemStack::EMPTY)),
             ItemStackOptionalTemplateSerializer::from,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pumpkin_data::data_component_impl::{EnchantmentsImpl, LoreImpl};
+
+    fn shop_text(legacy: &str) -> TextComponent {
+        let mut text = TextComponent::from_legacy_string(legacy);
+        text.0.style.italic = Some(false);
+        text
+    }
+
+    /// A shop currency item: styled name and lore, as plugins build them.
+    fn bronze() -> ItemStack {
+        let mut stack = ItemStack::new(5, &Item::BRICK);
+        stack.set_data_component(CustomNameImpl {
+            name: shop_text("§6Bronze"),
+        });
+        stack
+    }
+
+    /// The hash a 26.3 client sends for `bronze` (vanilla `HashedStack.create`).
+    fn bronze_hash(count: i32) -> OptionalItemStackHash {
+        OptionalItemStackHash(Some(ItemStackHash {
+            item_id: VarInt(i32::from(Item::BRICK.id)),
+            count: VarInt(count),
+            components: ItemComponentHash {
+                added: vec![(VarInt(DataComponent::CustomName.to_id().into()), -661018398)],
+                removed: vec![],
+            },
+        }))
+    }
+
+    #[test]
+    fn client_hash_of_a_named_item_matches() {
+        let stack = bronze();
+        assert!(bronze_hash(5).hash_equals(&stack));
+        assert!(!bronze_hash(4).hash_equals(&stack));
+        assert!(!bronze_hash(5).hash_equals(&ItemStack::new(5, &Item::BRICK)));
+        assert!(!bronze_hash(5).hash_equals(ItemStack::EMPTY));
+        assert!(OptionalItemStackHash(None).hash_equals(ItemStack::EMPTY));
+        // the client drops patch entries equal to the default, so they must not count
+        let mut touched = stack;
+        let _ = touched.get_data_component_mut::<EnchantmentsImpl>();
+        touched.set_data_component(LoreImpl { lines: vec![] });
+        assert!(bronze_hash(5).hash_equals(&touched));
+    }
+
+    #[test]
+    fn named_item_equals_its_copy_through_the_wire_format() {
+        // plugins copy item components through these bytes (get-components /
+        // set-component), so a copy must still stack with the original
+        let mut stack = bronze();
+        stack.set_data_component(LoreImpl {
+            lines: vec![
+                shop_text("§7Preis: §f§l1 Bronze"),
+                TextComponent::text("Rüstung"),
+            ],
+        });
+        let mut copy = ItemStack::new(5, &Item::BRICK);
+        for (id, data) in &stack.patch {
+            let mut bytes = Vec::new();
+            serialize(*id, data.as_ref().unwrap().as_ref(), &mut bytes).unwrap();
+            let decoded = deserialize(*id, &mut bytes.as_slice()).unwrap();
+            assert_eq!(decoded.get_hash(), data.as_ref().unwrap().get_hash());
+            copy.patch.push((*id, Some(decoded)));
+        }
+        assert!(stack.are_items_and_components_equal(&copy));
+        assert!(copy.are_items_and_components_equal(&stack));
     }
 }
