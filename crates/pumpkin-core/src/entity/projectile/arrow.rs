@@ -848,13 +848,18 @@ impl EntityBase for ArrowEntity {
                     );
                 }
 
-                // Stop the arrow with slight position offset backwards
+                // Stop the arrow with slight position offset backwards: vanilla by the sign of each axis,
+                // 1.8 along the motion (a flat shot sticks right on the floor, not 0.05 above it)
                 let velocity = entity.velocity.load();
-                let norm_dir = Vector3::new(
-                    velocity.x.signum(),
-                    velocity.y.signum(),
-                    velocity.z.signum(),
-                );
+                let norm_dir = if crate::entity::legacy_combat::config(&world).is_some() {
+                    velocity.normalize()
+                } else {
+                    Vector3::new(
+                        velocity.x.signum(),
+                        velocity.y.signum(),
+                        velocity.z.signum(),
+                    )
+                };
                 let offset = norm_dir.multiply(0.05, 0.05, 0.05);
                 entity.set_pos(hit_pos.sub(&offset));
                 entity.velocity.store(Vector3::new(0.0, 0.0, 0.0));
@@ -928,8 +933,10 @@ impl EntityBase for ArrowEntity {
                     None,
                 );
 
+                let legacy = crate::entity::legacy_combat::config(&world).is_some();
                 if let Some(living) = target.get_living_entity() {
-                    if punch > 0 {
+                    // 1.8 `EntityArrow.onUpdate` only pushes (Punch) after a successful hit
+                    if punch > 0 && (damage_succeeded || !legacy) {
                         let norm = Vector3::new(velocity.x, 0.0, velocity.z).normalize();
                         let push_scale = f64::from(punch) * 0.6;
                         target.get_entity().velocity.store(
@@ -939,6 +946,23 @@ impl EntityBase for ArrowEntity {
                                 norm.z * push_scale,
                             )),
                         );
+                        target
+                            .get_entity()
+                            .velocity_dirty
+                            .store(true, Ordering::SeqCst);
+                    }
+                    if legacy
+                        && let Some(player) = target.get_player()
+                        && target
+                            .get_entity()
+                            .velocity_dirty
+                            .swap(false, Ordering::SeqCst)
+                    {
+                        target.get_entity().send_velocity();
+                        // unlike a melee hit, 1.8 keeps an arrow's knockback (and Punch) in the server motion
+                        player
+                            .legacy_server_motion
+                            .store(target.get_entity().velocity.load());
                     }
 
                     // Play hit sound

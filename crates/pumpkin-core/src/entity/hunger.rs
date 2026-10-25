@@ -53,7 +53,24 @@ impl HungerManager {
             needs_sync = true;
         }
 
-        if natural_regen && saturation > 0.0 && can_heal && level >= 20 {
+        let legacy = crate::entity::legacy_combat::config(&player.world());
+        if let Some(cfg) = &legacy {
+            // 1.8 `FoodStats.onUpdate`: no saturation boost, one heart point per interval with 18+ food
+            if natural_regen && level >= 18 && can_heal {
+                timer += 1;
+                if timer >= cfg.regen_interval_ticks {
+                    heal_amount = 1.0;
+                    exhaustion = (exhaustion + cfg.regen_exhaustion).min(MAX_EXHAUSTION);
+                    timer = 0;
+                    needs_sync = true;
+                }
+            } else if level != 0 {
+                timer = 0;
+            }
+        }
+        if legacy.is_some() && level != 0 {
+            // handled above
+        } else if natural_regen && saturation > 0.0 && can_heal && level >= 20 {
             timer += 1;
             if timer >= 10 {
                 let cost = saturation.min(6.0);
