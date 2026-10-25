@@ -3839,18 +3839,18 @@ impl Entity {
             // the dismount packet, sends stale position packets from the old riding
             // position, and the server processes them before the teleport arrives.
             let teleport_id = if reposition && let Some(player) = passenger.get_player() {
+                // Use fallback position as placeholder — updated below with real position
+                let placeholder =
+                    Vector3::new(self.pos.load().x, vehicle_box.max.y, self.pos.load().z);
+                let mut awaiting_teleport = player
+                    .awaiting_teleport
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let id = player
                     .teleport_id_count
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                     + 1;
-                // Use fallback position as placeholder — updated below with real position
-                let placeholder =
-                    Vector3::new(self.pos.load().x, vehicle_box.max.y, self.pos.load().z);
-                *player
-                    .awaiting_teleport
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some((id.into(), placeholder));
+                *awaiting_teleport = Some((id.into(), placeholder));
                 Some(id)
             } else {
                 None
@@ -4055,31 +4055,40 @@ impl Entity {
             // Phase 2: Teleport to safety (unblocks movement)
             if let Some(player) = passenger.get_player() {
                 if let Some(id) = teleport_id {
-                    player.get_entity().set_pos(dismount_pos);
-                    // Update awaiting_teleport with the real dismount position
-                    *player
+                    let mut awaiting_teleport = player
                         .awaiting_teleport
                         .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some((id.into(), dismount_pos));
-                    // Use send_client_packet so the teleport goes through
-                    // the same packet queue as CSetPassengers, preserving send order.
-                    // Vanilla uses DELTA | ROT flags: position absolute, delta/rotation relative.
-                    // With rotation relative and yaw/pitch=0, the client preserves its current look.
-                    player.try_send_client_packet(&CPlayerPosition::new(
-                        id.into(),
-                        dismount_pos,
-                        Vector3::new(0.0, 0.0, 0.0),
-                        0.0,
-                        0.0,
-                        vec![
-                            PositionFlag::DeltaX,
-                            PositionFlag::DeltaY,
-                            PositionFlag::DeltaZ,
-                            PositionFlag::YRot,
-                            PositionFlag::XRot,
-                        ],
-                    ));
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    // A teleport requested meanwhile (the dismount above can run plugin code) has a
+                    // newer id and its own target: sending this older one after it would leave the
+                    // client here while the server awaits the newer one.
+                    if awaiting_teleport
+                        .as_ref()
+                        .is_some_and(|(awaited, _)| *awaited == id.into())
+                    {
+                        player.get_entity().set_pos(dismount_pos);
+                        // Update awaiting_teleport with the real dismount position
+                        *awaiting_teleport = Some((id.into(), dismount_pos));
+                        // Use send_client_packet so the teleport goes through
+                        // the same packet queue as CSetPassengers, preserving send order.
+                        // Vanilla uses DELTA | ROT flags: position absolute, delta/rotation relative.
+                        // With rotation relative and yaw/pitch=0, the client preserves its current look.
+                        player.try_send_client_packet(&CPlayerPosition::new(
+                            id.into(),
+                            dismount_pos,
+                            Vector3::new(0.0, 0.0, 0.0),
+                            0.0,
+                            0.0,
+                            vec![
+                                PositionFlag::DeltaX,
+                                PositionFlag::DeltaY,
+                                PositionFlag::DeltaZ,
+                                PositionFlag::YRot,
+                                PositionFlag::XRot,
+                            ],
+                        ));
+                    }
+                    drop(awaiting_teleport);
                 }
 
                 // Vanilla: setSneaking(false) after dismount via sneak input
