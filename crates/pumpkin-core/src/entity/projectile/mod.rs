@@ -32,12 +32,14 @@ use pumpkin_data::item_stack::ItemStack;
 #[must_use]
 pub fn is_projectile(entity_type: &EntityType) -> bool {
     *entity_type == EntityType::ARROW
+        || *entity_type == EntityType::SPECTRAL_ARROW
         || *entity_type == EntityType::TRIDENT
         || *entity_type == EntityType::EGG
         || *entity_type == EntityType::SNOWBALL
         || *entity_type == EntityType::EXPERIENCE_BOTTLE
         || *entity_type == EntityType::FIREWORK_ROCKET
         || *entity_type == EntityType::WIND_CHARGE
+        || *entity_type == EntityType::BREEZE_WIND_CHARGE
         || *entity_type == EntityType::SPLASH_POTION
         || *entity_type == EntityType::LINGERING_POTION
         || *entity_type == EntityType::ENDER_PEARL
@@ -124,10 +126,31 @@ pub fn check_left_owner(left_owner: &AtomicBool, projectile: &Entity, owner_id: 
     left_owner.store(left, Ordering::Relaxed);
 }
 
+/// Whether a projectile skips its own owner.
+///
+/// In 1.8 combat for its first 5 ticks (`ticksInAir < 5` in
+/// `EntityArrow` and `EntityThrowable`), otherwise until it left the owner (vanilla `canHitEntity`: the owner
+/// rides in its own vehicle tree), so a shot straight up can come down on the shooter.
+pub fn skips_owner(
+    left_owner: &AtomicBool,
+    projectile: &Entity,
+    owner_id: Option<i32>,
+    target: &Entity,
+) -> bool {
+    if owner_id != Some(target.entity_id) {
+        return false;
+    }
+    if crate::entity::legacy_combat::config(&projectile.world.load()).is_some() {
+        projectile.tick_count.load(Ordering::Relaxed) < 5
+    } else {
+        !left_owner.load(Ordering::Relaxed)
+    }
+}
+
 /// The owner part of vanilla `Projectile.canHitEntity` (`owner.isPassengerOfSameVehicle(entity)`).
 ///
 /// Until the projectile left its owner it cannot hit anything riding in the owner's vehicle tree, such as a mob sitting on
-/// the shooter's head. The owner itself keeps the callers' 1.8 rule (not hit in the first 5 ticks).
+/// the shooter's head. The owner itself is decided by [`skips_owner`].
 pub fn rides_with_owner(
     left_owner: &AtomicBool,
     projectile: &Entity,
@@ -341,10 +364,7 @@ impl ThrownItemEntity {
             return true;
         }
 
-        // Skip owner for initial frames
-        if Some(other_ent.entity_id) == self.owner_id
-            && self_ent.tick_count.load(Ordering::Relaxed) < 5
-        {
+        if skips_owner(&self.left_owner, self_ent, self.owner_id, other_ent) {
             return true;
         }
 
@@ -530,7 +550,7 @@ mod tests {
             owner,
             stranger.get_entity()
         ));
-        // the owner itself is left to the projectiles' own five-tick rule
+        // the owner itself is decided by `skips_owner`
         assert!(!rides_with_owner(
             &left_owner,
             &arrow,

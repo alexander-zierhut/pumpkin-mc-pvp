@@ -16,7 +16,9 @@ use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 
 use super::arrow::ArrowPickup;
-use super::{ProjectileHit, calculate_ray_intersection, check_left_owner, rides_with_owner};
+use super::{
+    ProjectileHit, calculate_ray_intersection, check_left_owner, rides_with_owner, skips_owner,
+};
 
 pub struct TridentEntity {
     pub entity: Entity,
@@ -147,10 +149,7 @@ impl TridentEntity {
             return true;
         }
 
-        // Skip owner for initial frames (5 ticks)
-        if Some(other_ent.entity_id) == self.owner_id
-            && self_ent.tick_count.load(Ordering::Relaxed) < 5
-        {
+        if skips_owner(&self.left_owner, self_ent, self.owner_id, other_ent) {
             return true;
         }
 
