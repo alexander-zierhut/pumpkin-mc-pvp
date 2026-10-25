@@ -326,11 +326,15 @@ impl ConsumableImpl {
     }
     pub fn read_data(data: &NbtTag) -> Option<Self> {
         let compound = data.extract_compound()?;
-        let consume_seconds = compound.get_float("consume_seconds")?;
-        let animation = compound
-            .get_string("animation")?
-            .parse::<ConsumeAnimation>()
-            .ok()?;
+        // vanilla `Consumable.CODEC`: both optional (1.6 s, "eat"), any number for the seconds
+        let consume_seconds = match compound.get("consume_seconds") {
+            Some(tag) => tag.as_numeric_float()?,
+            None => 1.6,
+        };
+        let animation = match compound.get_string("animation") {
+            Some(name) => name.parse::<ConsumeAnimation>().ok()?,
+            None => ConsumeAnimation::Eat,
+        };
         let sound_event = get_idor(compound, "sound", Sound::EntityGenericEat);
         let consume_particles = compound.get_bool("has_consume_particles").unwrap_or(false);
         let opt_list = compound.get_list("on_consume_effects");

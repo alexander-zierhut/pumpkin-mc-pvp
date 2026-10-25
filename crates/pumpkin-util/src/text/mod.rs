@@ -898,10 +898,27 @@ impl TextComponentBase {
     }
 }
 
+/// Text component fields that are booleans; NBT stores them as bytes (`bold: 1b`), which the JSON based
+/// deserializer would reject (and `from_nbt` then returned an empty component).
+const BOOLEAN_TEXT_FIELDS: [&str; 6] = [
+    "bold",
+    "italic",
+    "underlined",
+    "strikethrough",
+    "obfuscated",
+    "interpret",
+];
+
 fn nbt_compound_to_json(compound: &pumpkin_nbt::NbtCompound) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (k, v) in &compound.child_tags {
-        map.insert(k.to_string(), nbt_tag_to_json(v));
+        let value = match v {
+            pumpkin_nbt::tag::NbtTag::Byte(b) if BOOLEAN_TEXT_FIELDS.contains(&k.as_ref()) => {
+                serde_json::Value::Bool(*b != 0)
+            }
+            _ => nbt_tag_to_json(v),
+        };
+        map.insert(k.to_string(), value);
     }
     serde_json::Value::Object(map)
 }
@@ -2072,6 +2089,18 @@ mod test {
     };
     use crate::version::JavaMinecraftVersion;
     use std::borrow::Cow;
+
+    #[test]
+    fn from_nbt_reads_byte_booleans() {
+        let mut compound = pumpkin_nbt::compound::NbtCompound::new();
+        compound.put_string("text", "Bronze".to_string());
+        compound.put_byte("bold", 1);
+        compound.put_byte("italic", 0);
+        let text = TextComponent::from_nbt(&pumpkin_nbt::tag::NbtTag::Compound(compound));
+        assert_eq!(text.0.style.bold, Some(true));
+        assert_eq!(text.0.style.italic, Some(false));
+        assert_eq!(text.get_text(), "Bronze");
+    }
 
     #[test]
     fn serialize_text_component() {

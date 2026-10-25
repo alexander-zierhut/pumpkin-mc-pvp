@@ -177,4 +177,27 @@ mod test {
         assert!(parse("salmon_spawn_egg[salmon/size=\"large\",").is_err());
         assert!(parse("salmon_spawn_egg[%]").is_err());
     }
+
+    #[test]
+    fn styled_custom_name_and_lore_parse() {
+        use pumpkin_data::data_component_impl::{CustomNameImpl, LoreImpl};
+        let stack = parse(
+            "brick[custom_name={text:\"Bronze\",color:\"dark_red\",italic:0b},lore=[\"plain\",{text:\"Preis:\",bold:1b}]]",
+        )
+        .unwrap();
+        let name = stack.get_data_component::<CustomNameImpl>().unwrap();
+        assert_eq!(name.name.clone().get_text(), "Bronze");
+        assert_eq!(name.name.0.style.italic, Some(false));
+        let lore = stack.get_data_component::<LoreImpl>().unwrap();
+        assert_eq!(lore.lines.len(), 2);
+        assert_eq!(lore.lines[1].0.style.bold, Some(true));
+    }
+
+    #[test]
+    fn consumable_accepts_vanilla_shorthands() {
+        assert!(
+            parse("wooden_sword[consumable={consume_seconds:1000000,animation:\"block\"}]").is_ok()
+        );
+        assert!(parse("wooden_sword[consumable={}]").is_ok());
+    }
 }
