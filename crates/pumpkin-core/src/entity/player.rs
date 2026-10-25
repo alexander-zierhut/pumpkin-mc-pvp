@@ -4212,6 +4212,23 @@ impl Player {
         }}
     }
 
+    /// Applies a move from the player's own movement packet with `apply`, unless a server teleport
+    /// or world change started after the packet was checked.
+    ///
+    /// `apply` moves the entity and tells the viewers. Vanilla handles both on one thread and ignores
+    /// moves until the teleport is confirmed; here the move event can run plugin code meanwhile, and a
+    /// stale move would put the player back and send the viewers its old position.
+    pub fn apply_client_move<T>(&self, apply: impl FnOnce() -> T) -> Option<T> {
+        let awaiting_teleport = self
+            .awaiting_teleport
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if awaiting_teleport.is_some() || !self.has_client_loaded() {
+            return None;
+        }
+        Some(apply())
+    }
+
     /// `yaw` and `pitch` are in degrees.
     /// Rarly used, for example when waking up the player from a bed or their first time spawn. Otherwise, the `teleport` method should be used.
     /// The player should respond with the `SConfirmTeleport` packet.
@@ -4238,16 +4255,26 @@ impl Player {
         let i = self.teleport_id_count.fetch_add(1, Ordering::Relaxed);
         self.chunk_send_epoch.fetch_add(1, Ordering::Relaxed);
         let teleport_id = i + 1;
+        // Under the lock `apply_client_move` checks: a move packet still in flight can no longer
+        // put the player back.
+        let mut awaiting_teleport = self
+            .awaiting_teleport
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(self.client.as_ref(), ClientPlatform::Java(_)) {
+            *awaiting_teleport = Some((teleport_id.into(), position));
+        }
         self.living_entity.entity.set_pos(position);
+        drop(awaiting_teleport);
+        // Vanilla `ServerPlayer.teleportTo` moves the chunk view right away; waiting for the
+        // client's next position packet leaves a standing player without chunks for up to a second.
+        if let Some(player_arc) = self.world().get_player_by_uuid(self.gameprofile.id) {
+            crate::world::chunker::update_position(&player_arc);
+        }
         let entity = &self.living_entity.entity;
         entity.set_rotation(yaw, pitch);
         match self.client.as_ref() {
             ClientPlatform::Java(client) => {
-                *self
-                    .awaiting_teleport
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                    Some((teleport_id.into(), position));
                 let packet = CPlayerPosition::new(
                     teleport_id.into(),
                     position,
