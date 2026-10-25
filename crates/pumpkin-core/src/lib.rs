@@ -449,6 +449,7 @@ impl PumpkinServer {
             }
         }
 
+        release_free_memory();
         duration
     }
 
@@ -861,6 +862,17 @@ fn scrub_address(ip: &str) -> String {
     ip.chars()
         .map(|ch| if ch == '.' || ch == ':' { ch } else { 'x' })
         .collect()
+}
+
+/// Hands memory that is free inside the malloc heaps back to the OS. glibc only returns the top of
+/// a heap by itself, so a startup peak stays resident: compiling a Wasm plugin without a warm
+/// compile cache leaves ~110 MiB of freed compiler buffers in the main heap.
+fn release_free_memory() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: malloc_trim only walks glibc's own heaps.
+        unsafe { libc::malloc_trim(0) };
+    }
 }
 
 #[cfg(target_family = "unix")]
