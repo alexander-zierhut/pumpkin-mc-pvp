@@ -23,7 +23,7 @@ use pumpkin_data::dimension::Dimension;
 use pumpkin_data::{Block, BlockStateId, block_properties::has_random_ticks, fluid::Fluid};
 use pumpkin_util::math::{position::BlockPos, vector2::Vector2};
 use pumpkin_util::world_seed::Seed;
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxBuildHasher, FxHashSet};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 use std::{
@@ -78,13 +78,13 @@ pub struct Level {
 
     // Chunks that are paired with chunk watchers. When a chunk is no longer watched, it is removed
     // from the loaded chunks map and sent to the underlying ChunkIO
-    pub loaded_chunks: Arc<DashMap<Vector2<i32>, SyncChunk>>,
+    pub loaded_chunks: Arc<ChunkPosMap<SyncChunk>>,
     pub(crate) loaded_chunk_changes: Arc<SegQueue<LoadedChunkChange>>,
-    loaded_entity_chunks: Arc<DashMap<Vector2<i32>, SyncEntityChunk>>,
-    pub chunks_with_scheduled_ticks: Arc<dashmap::DashSet<Vector2<i32>>>,
+    loaded_entity_chunks: Arc<ChunkPosMap<SyncEntityChunk>>,
+    pub chunks_with_scheduled_ticks: Arc<dashmap::DashSet<Vector2<i32>, FxBuildHasher>>,
     pub chunk_loading: Mutex<ChunkLoading>,
 
-    chunk_watchers: Arc<DashMap<Vector2<i32>, usize>>,
+    chunk_watchers: Arc<ChunkPosMap<usize>>,
 
     pub chunk_saver: Arc<ChunkSaver>,
     entity_saver: Arc<EntitySaver>,
@@ -109,12 +109,19 @@ pub struct Level {
     /// Number of ticks between autosave checks. If 0, autosave is disabled.
     pub autosave_ticks: u64,
 
-    pending_entity_generations: Arc<DashMap<Vector2<i32>, Vec<oneshot::Sender<SyncEntityChunk>>>>,
+    pending_entity_generations: Arc<ChunkPosMap<Vec<oneshot::Sender<SyncEntityChunk>>>>,
 
     pub level_channel: Arc<LevelChannel>,
     pub thread_tracker: Mutex<Vec<thread::JoinHandle<()>>>,
     pub chunk_listener: Arc<ChunkListener>,
 }
+
+/// A concurrent map keyed by chunk position, hashed with Fx.
+///
+/// The loaded chunk map is read for every block access that goes through a chunk (lighting,
+/// random ticks, entity physics, the active chunk walks of each tick), and hashing the key with
+/// the default `SipHash` was the single biggest item of an idle server's tick thread.
+pub type ChunkPosMap<V> = DashMap<Vector2<i32>, V, FxBuildHasher>;
 
 pub struct TickData {
     pub block_ticks: Vec<OrderedTick<&'static Block>>,
@@ -282,7 +289,7 @@ impl Level {
             ChunkConfig::Pump => Arc::new(EntitySaver::Pump(ChunkFileManager::new(()))),
         };
 
-        let pending_entity_generations = Arc::new(DashMap::new());
+        let pending_entity_generations = Arc::new(ChunkPosMap::default());
         let level_channel = Arc::new(LevelChannel::new());
         let thread_tracker = Mutex::new(Vec::new());
         let listener = Arc::new(ChunkListener::new());
@@ -297,12 +304,12 @@ impl Level {
             chunk_saver,
             entity_saver,
             schedule_tick_counts: AtomicU64::new(0),
-            loaded_chunks: Arc::new(DashMap::new()),
+            loaded_chunks: Arc::new(ChunkPosMap::default()),
             loaded_chunk_changes: Arc::new(SegQueue::new()),
-            loaded_entity_chunks: Arc::new(DashMap::new()),
-            chunks_with_scheduled_ticks: Arc::new(dashmap::DashSet::new()),
+            loaded_entity_chunks: Arc::new(ChunkPosMap::default()),
+            chunks_with_scheduled_ticks: Arc::new(dashmap::DashSet::default()),
             chunk_loading: Mutex::new(ChunkLoading::new(level_channel.clone())),
-            chunk_watchers: Arc::new(DashMap::new()),
+            chunk_watchers: Arc::new(ChunkPosMap::default()),
             tasks: TaskTracker::new(),
             chunk_system_tasks: TaskTracker::new(),
             cancel_token: CancellationToken::new(),
