@@ -811,13 +811,18 @@ impl EntityBase for ArrowEntity {
                     );
                 }
 
-                // Stop the arrow with slight position offset backwards
+                // Stop the arrow with slight position offset backwards: vanilla by the sign of each axis,
+                // 1.8 along the motion (a flat shot sticks right on the floor, not 0.05 above it)
                 let velocity = entity.velocity.load();
-                let norm_dir = Vector3::new(
-                    velocity.x.signum(),
-                    velocity.y.signum(),
-                    velocity.z.signum(),
-                );
+                let norm_dir = if crate::entity::legacy_combat::config(&world).is_some() {
+                    velocity.normalize()
+                } else {
+                    Vector3::new(
+                        velocity.x.signum(),
+                        velocity.y.signum(),
+                        velocity.z.signum(),
+                    )
+                };
                 let offset = norm_dir.multiply(0.05, 0.05, 0.05);
                 entity.set_pos(hit_pos.sub(&offset));
                 entity.velocity.store(Vector3::new(0.0, 0.0, 0.0));
