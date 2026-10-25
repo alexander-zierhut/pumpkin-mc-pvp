@@ -3,7 +3,7 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use crate::entity::projectile::{
-    ProjectileHit, calculate_ray_intersection, check_left_owner, rides_with_owner,
+    ProjectileHit, calculate_ray_intersection, check_left_owner, rides_with_owner, skips_owner,
 };
 use crate::{
     entity::{Entity, EntityBase, living::LivingEntity, player::Player},
@@ -1067,10 +1067,7 @@ impl ArrowEntity {
             return true;
         }
 
-        // Skip owner for initial frames (5 ticks)
-        if Some(other_ent.entity_id) == self.owner_id
-            && self_ent.tick_count.load(Ordering::Relaxed) < 5
-        {
+        if skips_owner(&self.left_owner, self.owner_id, other_ent) {
             return true;
         }
 
