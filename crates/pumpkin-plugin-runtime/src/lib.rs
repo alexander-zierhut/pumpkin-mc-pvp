@@ -79,6 +79,28 @@ mod tests {
         }
     }
 
+    /// Returns from `spawn_blocking` only after the operation had time to run, so the operation
+    /// always wins the race against whatever the caller does right after spawning it.
+    struct SlowBlockingSpawner {
+        runtime: tokio::runtime::Handle,
+    }
+
+    impl RuntimeSpawner for SlowBlockingSpawner {
+        fn spawn(&self, task: SpawnFuture) -> Result<(), SpawnError> {
+            drop(self.runtime.spawn(task));
+            Ok(())
+        }
+
+        fn spawn_blocking(
+            &self,
+            task: Box<dyn FnOnce() + Send + 'static>,
+        ) -> Result<(), SpawnError> {
+            drop(self.runtime.spawn_blocking(task));
+            std::thread::sleep(Duration::from_millis(200));
+            Ok(())
+        }
+    }
+
     struct DroppingSpawner;
 
     impl RuntimeSpawner for DroppingSpawner {
@@ -138,6 +160,15 @@ mod tests {
             let spawner = Arc::new(TestSpawner {
                 runtime: tokio::runtime::Handle::current(),
             });
+            Self::with_spawner(store, policy, spawner, mode).await
+        }
+
+        async fn with_spawner(
+            store: Store<TestHostState>,
+            policy: LegacySyncReentry,
+            spawner: Arc<dyn RuntimeSpawner>,
+            mode: StoreMode,
+        ) -> Self {
             let executor = LegacyStore::start(store, policy, spawner, mode)
                 .await
                 .expect("start test Store driver");
@@ -789,7 +820,9 @@ mod tests {
 
     /// Mirrors synchronous game methods that call `fire_blocking` from a
     /// blocking worker while the host import keeps the active store pumpable.
-    async fn blocking_host_operation_propagates_the_reentry_chain() {
+    /// `slow_spawn` lets the blocking callback reach the Store before `pump_blocking` continues
+    /// after spawning it (a player screen closed by a plugin at round start used to hang there).
+    async fn blocking_host_operation_propagates_the_reentry_chain(slow_spawn: bool) {
         let engine = test_engine(StoreMode::Sequential);
         let component = Component::new(&engine, sync_reentry_component()).expect("test component");
 
@@ -845,7 +878,20 @@ mod tests {
             .expect("run export");
         assert!(run_slot.set(run).is_ok());
 
-        let driver = TestStore::new(store, StoreMode::Sequential).await;
+        let driver = if slow_spawn {
+            let spawner = Arc::new(SlowBlockingSpawner {
+                runtime: tokio::runtime::Handle::current(),
+            });
+            TestStore::with_spawner(
+                store,
+                LegacySyncReentry::new(),
+                spawner,
+                StoreMode::Sequential,
+            )
+            .await
+        } else {
+            TestStore::new(store, StoreMode::Sequential).await
+        };
         assert!(driver_slot.set(driver.clone()).is_ok());
 
         timeout(
@@ -1302,7 +1348,8 @@ mod tests {
         assert_synchronous_reentry_depth_is_bounded_and_recovers();
         timeout(Duration::from_secs(10), async {
             sync_lifted_same_instance_reentry_completes().await;
-            blocking_host_operation_propagates_the_reentry_chain().await;
+            blocking_host_operation_propagates_the_reentry_chain(false).await;
+            blocking_host_operation_propagates_the_reentry_chain(true).await;
             unrelated_guest_call_waits_for_the_active_chain().await;
             opposing_plugin_roots_scenario().await;
         })
