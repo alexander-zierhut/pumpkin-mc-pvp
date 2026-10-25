@@ -17,7 +17,7 @@ use pumpkin_data::item::Item;
 use pumpkin_data::item_stack::ItemStack;
 use pumpkin_data::sound::{Sound, SoundCategory};
 use pumpkin_protocol::IdOr;
-use pumpkin_protocol::java::client::play::{CSoundEffect, Metadata};
+use pumpkin_protocol::java::client::play::{CSoundEffect, GameEvent, Metadata};
 use pumpkin_util::math::boundingbox::BoundingBox;
 use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
@@ -916,18 +916,17 @@ impl EntityBase for ArrowEntity {
                         target.get_entity().send_velocity();
                     }
 
-                    // Play hit sound
-                    let sound_pitch = 1.2 / (rand::random::<f32>() * 0.2 + 0.9);
-                    let sound_packet = CSoundEffect::new(
-                        IdOr::Id(Sound::EntityArrowHit as u16),
-                        SoundCategory::Neutral,
-                        &hit_pos,
-                        1.0,
-                        sound_pitch,
-                        0,
-                    );
-                    let chunk_pos = entity.chunk_pos.load();
-                    world.broadcast_to_chunk(chunk_pos, &sound_packet);
+                    // Vanilla `AbstractArrow.onHitEntity`: the shooter hears the "ding" when its arrow hurts
+                    // another player (1.8 `S2BPacketChangeGameState(6)`)
+                    if damage_succeeded
+                        && !entity.is_silent()
+                        && let Some(victim) = target.get_player()
+                        && let Some(shooter) =
+                            owner_entity.as_deref().and_then(EntityBase::get_player)
+                        && shooter.entity_id() != victim.entity_id()
+                    {
+                        shooter.send_game_event(GameEvent::ArrowHitPlayer, 0.0);
+                    }
 
                     if Self::should_apply_post_hurt_effects(damage_succeeded) {
                         let item_stack = self
@@ -948,6 +947,21 @@ impl EntityBase for ArrowEntity {
                             living.add_effect(Self::spectral_glowing_effect());
                         }
                     }
+                }
+
+                // Hit sound at the target, only for a hit that hurt (vanilla `playSound(this.soundEvent, ...)`)
+                if damage_succeeded {
+                    let sound_pitch = 1.2 / (rand::random::<f32>() * 0.2 + 0.9);
+                    let sound_packet = CSoundEffect::new(
+                        IdOr::Id(Sound::EntityArrowHit as u16),
+                        SoundCategory::Neutral,
+                        &hit_pos,
+                        1.0,
+                        sound_pitch,
+                        0,
+                    );
+                    let chunk_pos = entity.chunk_pos.load();
+                    world.broadcast_to_chunk(chunk_pos, &sound_packet);
                 }
 
                 // Check pierce level
