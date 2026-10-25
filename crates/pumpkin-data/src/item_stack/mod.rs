@@ -708,40 +708,50 @@ impl ItemStack {
         }
     }
 
+    /// The patch as vanilla keeps it (`PatchedDataComponentMap.applyPatch`): without entries that
+    /// equal the item's default and without removals of components the item does not have. Our
+    /// patch can hold both (e.g. a default copied in by `get_data_component_mut`).
+    pub fn sanitized_patch(
+        &self,
+    ) -> impl Iterator<Item = &(DataComponent, Option<Box<dyn DataComponentImpl>>)> {
+        self.patch.iter().filter(|(id, data)| {
+            let default = self
+                .item
+                .components
+                .iter()
+                .find(|(default_id, _)| default_id == id)
+                .map(|(_, default)| *default);
+            match (data, default) {
+                (Some(data), Some(default)) => !data.equal(default),
+                (Some(_), None) => true,
+                (None, default) => default.is_some(),
+            }
+        })
+    }
+
+    /// Vanilla `ItemStack.isSameItemSameComponents`: the same item and the same components.
     #[must_use]
     pub fn are_items_and_components_equal(&self, other: &Self) -> bool {
-        // Items must match
         if self.item != other.item {
             return false;
         }
-
-        if self.patch.len() != other.patch.len() {
-            return false;
-        }
-
-        for (id, data) in &self.patch {
-            let mut not_found = true;
-            'out: for (other_id, other_data) in &other.patch {
-                if id == other_id {
-                    if let (Some(data), Some(other_data)) = (data, other_data) {
-                        if !data.equal(other_data.as_ref()) {
-                            return false;
-                        }
-                        not_found = false;
-                        break 'out;
-                    } else if data.is_none() && other_data.is_none() {
-                        not_found = false;
-                        break 'out;
+        let other_patch: Vec<_> = other.sanitized_patch().collect();
+        let mut count = 0;
+        for (id, data) in self.sanitized_patch() {
+            count += 1;
+            let same = other_patch.iter().any(|(other_id, other_data)| {
+                other_id == id
+                    && match (data, other_data) {
+                        (Some(data), Some(other_data)) => data.equal(other_data.as_ref()),
+                        (None, None) => true,
+                        _ => false,
                     }
-                    return false;
-                }
-            }
-            if not_found {
+            });
+            if !same {
                 return false;
             }
         }
-
-        true
+        count == other_patch.len()
     }
 
     #[must_use]
@@ -907,6 +917,30 @@ mod tests {
         assert!(!plain.are_items_and_components_equal(&customized));
         assert!(!customized.are_items_and_components_equal(&plain));
         assert!(customized.are_items_and_components_equal(&customized.clone()));
+    }
+
+    #[test]
+    fn patch_entries_without_effect_keep_items_equal() {
+        let plain = ItemStack::new(16, &Item::BRICK);
+        // copies the item's default (no enchantments) into the patch
+        let mut touched = plain.clone();
+        let _ = touched.get_data_component_mut::<EnchantmentsImpl>();
+        assert_eq!(touched.patch.len(), 1);
+        assert!(plain.are_items_and_components_equal(&touched));
+        assert!(touched.are_items_and_components_equal(&plain));
+        // removing a component the item does not have
+        let mut removed = plain.clone();
+        removed.remove_data_component(DataComponent::CustomName);
+        assert!(plain.are_items_and_components_equal(&removed));
+        assert_eq!(touched.sanitized_patch().count(), 0);
+        assert_eq!(removed.sanitized_patch().count(), 0);
+        // a real difference still counts
+        let mut named = plain.clone();
+        named.set_data_component(CustomNameImpl {
+            name: pumpkin_util::text::TextComponent::text("Bronze"),
+        });
+        assert!(!touched.are_items_and_components_equal(&named));
+        assert!(!named.are_items_and_components_equal(&removed));
     }
 
     #[test]
