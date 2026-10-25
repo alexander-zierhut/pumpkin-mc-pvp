@@ -57,6 +57,10 @@ impl ItemBehaviour for SnowBallItem {
         snowball
             .thrown
             .set_velocity_from(pitch, yaw, 0.0, POWER, 1.0);
+        snowball
+            .thrown
+            .entity
+            .add_velocity(player.projectile_inherited_motion());
         world.spawn_entity(Arc::new(snowball));
 
         stack.decrement_unless_creative(player.gamemode.load(), 1);

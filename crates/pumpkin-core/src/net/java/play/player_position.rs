@@ -106,6 +106,7 @@ impl JavaClient {
                 let entity = &player.get_entity();
                 let last_pos = entity.pos.load();
                 player.get_entity().set_pos(pos);
+                player.record_legacy_movement(Vector3::new(pos.x - last_pos.x, pos.y - last_pos.y, pos.z - last_pos.z));
 
                 let distance = last_pos.squared_distance_to_vec(&pos).sqrt();
                 let cm = (distance * 100.0) as i32;
@@ -247,6 +248,7 @@ impl JavaClient {
                 let entity = &player.get_entity();
                 let last_pos = entity.pos.load();
                 player.get_entity().set_pos(pos);
+                player.record_legacy_movement(Vector3::new(pos.x - last_pos.x, pos.y - last_pos.y, pos.z - last_pos.z));
 
                 let distance = last_pos.squared_distance_to_vec(&pos).sqrt();
                 let cm = (distance * 100.0) as i32;

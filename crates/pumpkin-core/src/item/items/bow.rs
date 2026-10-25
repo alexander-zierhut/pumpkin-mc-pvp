@@ -175,16 +175,41 @@ impl BowItem {
         let is_creative = player.gamemode.load() == GameMode::Creative;
         let speed = power * ProjectileWeaponItem::ARROW_SPEED_MULTIPLIER;
 
-        ProjectileWeaponItem::shoot_projectiles(
-            &world,
-            player.get_entity(),
-            weapon,
-            projectiles,
-            speed,
-            uncertainty,
-            is_crit,
-            is_creative,
-        );
+        if crate::entity::legacy_combat::config(&world).is_some() {
+            // 1.8 `EntityArrow(world, shooter, velocity)`: eye-level offset, Gaussian spread and
+            // no inherited shooter movement
+            let shooter = player.get_entity();
+            for projectile in projectiles.iter().filter(|p| p.item_count > 0) {
+                let arrow = Self::create_projectile(player, weapon, projectile, is_crit);
+                let (position, velocity) = crate::entity::legacy_combat::arrow_launch(
+                    shooter.pos.load(),
+                    crate::entity::legacy_combat::player_eye_height(shooter.is_sneaking()),
+                    shooter.yaw.load(),
+                    shooter.pitch.load(),
+                    power,
+                    None,
+                );
+                arrow.entity.set_pos(position);
+                arrow.entity.velocity.store(velocity);
+                arrow.entity.set_rotation(
+                    velocity.x.atan2(velocity.z).to_degrees() as f32,
+                    velocity.y.atan2(velocity.horizontal_length()).to_degrees() as f32,
+                );
+                world.spawn_entity(std::sync::Arc::new(arrow));
+            }
+        } else {
+            ProjectileWeaponItem::shoot_projectiles(
+                &world,
+                player.get_entity(),
+                weapon,
+                projectiles,
+                speed,
+                uncertainty,
+                is_crit,
+                is_creative,
+                player.projectile_inherited_motion(),
+            );
+        }
 
         let sound_pitch = 1.0 / (rand::random::<f32>() * 0.4 + 1.2) + power * 0.5;
         let sound_packet = CSoundEffect::new(

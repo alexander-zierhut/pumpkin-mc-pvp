@@ -87,6 +87,10 @@ impl ItemBehaviour for SplashPotionItem {
         splash
             .thrown
             .set_velocity_from(pitch, yaw, ROLL, POWER, DIVERGENCE);
+        splash
+            .thrown
+            .entity
+            .add_velocity(player.projectile_inherited_motion());
 
         world.spawn_entity(Arc::new(splash));
 
@@ -141,6 +145,9 @@ impl ItemBehaviour for LingeringPotionItem {
 
         ling.thrown
             .set_velocity_from(pitch, yaw, ROLL, POWER, DIVERGENCE);
+        ling.thrown
+            .entity
+            .add_velocity(player.projectile_inherited_motion());
 
         world.spawn_entity(Arc::new(ling));
 

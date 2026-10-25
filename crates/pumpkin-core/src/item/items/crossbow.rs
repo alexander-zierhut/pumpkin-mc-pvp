@@ -154,6 +154,8 @@ impl CrossbowItem {
                     1.0,
                     false,
                     is_creative,
+                    // vanilla `CrossbowItem.shootProjectile` uses `shoot`, which adds no shooter movement
+                    pumpkin_util::math::vector3::Vector3::new(0.0, 0.0, 0.0),
                 );
 
                 let durability_use: i32 = projectiles

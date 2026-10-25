@@ -3000,6 +3000,10 @@ impl LivingEntity {
             }
         }
 
+        if crate::entity::legacy_combat::config(&self.entity.world.load()).is_some() {
+            return crate::entity::legacy_combat::armour_absorb(damage, armor);
+        }
+
         let breach_level = attacker
             .and_then(|att| {
                 let player = att.get_player()?;
@@ -3060,6 +3064,37 @@ impl LivingEntity {
         // 2. Enchantment Protection
         if damage_type.has_tag(&tag::DamageType::MINECRAFT_BYPASSES_ENCHANTMENTS) {
             return damage;
+        }
+
+        if let Some(cfg) = crate::entity::legacy_combat::config(&self.entity.world.load()) {
+            let mut total = 0;
+            let equipment_lock = self
+                .entity_equipment
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for slot in [
+                EquipmentSlot::HEAD,
+                EquipmentSlot::CHEST,
+                EquipmentSlot::LEGS,
+                EquipmentSlot::FEET,
+            ] {
+                if let Some(stack) = equipment_lock.equipment.get(&slot)
+                    && !stack.is_empty()
+                    && let Some(enchantments) = stack.get_data_component::<EnchantmentsImpl>()
+                {
+                    for (enchantment, level) in enchantments.enchantment.iter() {
+                        total += crate::entity::legacy_combat::protection_epf(
+                            enchantment,
+                            *level,
+                            damage_type,
+                        );
+                    }
+                }
+            }
+            let roll = cfg
+                .armour_randomness
+                .then(|| crate::entity::legacy_combat::protection_roll(total));
+            return crate::entity::legacy_combat::protection_absorb(damage, total, roll);
         }
 
         let mut epf = 0.0f32;
@@ -3339,9 +3374,39 @@ impl LivingEntity {
             }
         }
 
-        // Vanilla parity: 1. Armor absorb
+        // These damage types bypass the hurt cooldown and death protection
+        let bypasses_cooldown_protection =
+            damage_type == DamageType::GENERIC_KILL || damage_type == DamageType::OUT_OF_WORLD;
+
+        // Vanilla `LivingEntity.hurt`: the hurt cooldown compares the raw damage with the last raw
+        // damage; armour and magic absorption only apply to what gets through (`actuallyHurt`).
+        let last_damage = self.last_damage_taken.load();
+        let (hurt_amount, fresh_hit) =
+            if self.hurt_cooldown.load(Relaxed) > 10 && !bypasses_cooldown_protection {
+                if amount <= last_damage {
+                    return false;
+                }
+                (amount - last_damage, false)
+            } else {
+                self.hurt_cooldown.store(20, Relaxed);
+                (amount, true)
+            };
+
+        let legacy = crate::entity::legacy_combat::config(&world);
+        // 1.8 `EntityPlayer.damageEntity`: blocking with a sword before armour
+        let hurt_amount = if legacy.is_some()
+            && !damage_type.has_tag(&tag::DamageType::MINECRAFT_BYPASSES_ARMOR)
+            && caller
+                .get_player()
+                .is_some_and(super::player::Player::is_legacy_sword_blocking)
+        {
+            crate::entity::legacy_combat::blocked_damage(hurt_amount)
+        } else {
+            hurt_amount
+        };
+
         let damage_after_armor =
-            self.get_damage_after_armor_absorb(amount, &damage_type, cause.or(source));
+            self.get_damage_after_armor_absorb(hurt_amount, &damage_type, cause.or(source));
 
         let effective_amount = self.get_damage_after_magic_absorb(
             damage_after_armor,
@@ -3349,23 +3414,8 @@ impl LivingEntity {
             caller,
             cause.or(source),
         );
-
-        // These damage types bypass the hurt cooldown and death protection
-        let bypasses_cooldown_protection =
-            damage_type == DamageType::GENERIC_KILL || damage_type == DamageType::OUT_OF_WORLD;
-
-        // Apply hurt cooldown logic
-        let last_damage = self.last_damage_taken.load();
-        let (damage_amount, play_sound) =
-            if self.hurt_cooldown.load(Relaxed) > 10 && !bypasses_cooldown_protection {
-                if effective_amount <= last_damage {
-                    return false;
-                }
-                (effective_amount - last_damage, false)
-            } else {
-                self.hurt_cooldown.store(20, Relaxed);
-                (effective_amount, self.health.load() > effective_amount)
-            };
+        let damage_amount = effective_amount;
+        let play_sound = fresh_hit && self.health.load() > effective_amount;
 
         // Finalize state
         self.last_damage_taken.store(amount);
@@ -3445,9 +3495,32 @@ impl LivingEntity {
                 let target_pos = self.entity.pos.load();
                 let dx = source_pos.x - target_pos.x;
                 let dz = source_pos.z - target_pos.z;
-                let resistance = self.get_attribute_value(&Attributes::KNOCKBACK_RESISTANCE);
-                self.entity
-                    .apply_knockback(knockback_after_resistance(0.4, resistance), dx, dz);
+                if let Some(cfg) = &legacy {
+                    if !damage_type.has_tag(&tag::DamageType::MINECRAFT_NO_KNOCKBACK) {
+                        // 1.8 `EntityLivingBase.knockBack`; a player moves client side, so it
+                        // starts from the motion the 1.8 server keeps for it and sets that motion
+                        // (a melee hit restores it afterwards, `Player::legacy_attack`).
+                        let player = caller.get_player();
+                        let motion = player.map_or_else(
+                            || self.entity.velocity.load(),
+                            super::player::Player::legacy_motion,
+                        );
+                        let knockback =
+                            crate::entity::legacy_combat::base_knockback(motion, dx, dz, cfg);
+                        if let Some(player) = player {
+                            player.legacy_server_motion.store(knockback);
+                        }
+                        self.entity.velocity.store(knockback);
+                        self.entity.velocity_dirty.store(true, SeqCst);
+                    }
+                } else {
+                    let resistance = self.get_attribute_value(&Attributes::KNOCKBACK_RESISTANCE);
+                    self.entity.apply_knockback(
+                        knockback_after_resistance(0.4, resistance),
+                        dx,
+                        dz,
+                    );
+                }
             }
         }
 

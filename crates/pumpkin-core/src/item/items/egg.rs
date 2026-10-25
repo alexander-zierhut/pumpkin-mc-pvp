@@ -60,6 +60,9 @@ impl ItemBehaviour for EggItem {
         egg.set_item_stack(stack.copy_with_count(1));
 
         egg.thrown.set_velocity_from(pitch, yaw, 0.0, POWER, 1.0);
+        egg.thrown
+            .entity
+            .add_velocity(player.projectile_inherited_motion());
         world.spawn_entity(Arc::new(egg));
 
         stack.decrement_unless_creative(player.gamemode.load(), 1);
