@@ -332,7 +332,8 @@ impl EntitySelectorOption {
                     parser.reader.set_cursor(start);
                     return Err(self.inapplicable_error(parser.reader));
                 }
-                let string = parser.reader.read_unquoted_string();
+                // vanilla `EntitySelectorOptions` "name": `readString()`, so quoted names with spaces work
+                let string = parser.reader.read_string()?;
                 parser.add_predicate(EntitySelectorPredicate::Name(string, invert));
                 parser.set_flag(
                     if invert {

@@ -628,6 +628,14 @@ mod tests {
     }
 
     #[test]
+    fn parse_quoted_names() {
+        assert!(parse("@e[name=Shop]"));
+        assert!(parse("@e[type=villager,name=\"Mobiler Shop\"]"));
+        assert!(parse("@e[name=!'two words']"));
+        assert!(!parse("@e[name=\"unterminated]"));
+    }
+
+    #[test]
     fn parse_entity_type_with_namespace() {
         assert!(parse("@e[type=iron_golem]"));
         assert!(parse("@e[type=minecraft:iron_golem]"));
