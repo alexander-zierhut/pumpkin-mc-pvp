@@ -1,5 +1,6 @@
 use crate::data_component_impl::{
-    DataComponentImpl, IdOr, get_i32_hash, get_idor_hash, get_str_hash,
+    DataComponentImpl, IdOr, get_bool_hash, get_i32_hash, get_idor_hash, get_list_hash,
+    get_str_hash, get_text_hash,
 };
 use crate::sound::Sound;
 use pumpkin_nbt::compound::NbtCompound;
@@ -28,9 +29,6 @@ impl CustomDataImpl {
 impl DataComponentImpl for CustomDataImpl {
     fn write_data(&self) -> NbtTag {
         NbtTag::Compound(self.data.clone())
-    }
-    fn get_hash(&self) -> i32 {
-        0
     }
     default_impl!(CustomData);
 }
@@ -100,9 +98,6 @@ impl DataComponentImpl for UnbreakableImpl {
     fn write_data(&self) -> NbtTag {
         NbtTag::Compound(NbtCompound::new())
     }
-    fn get_hash(&self) -> i32 {
-        0
-    }
     default_impl!(Unbreakable);
 }
 
@@ -137,7 +132,7 @@ impl DataComponentImpl for CustomNameImpl {
         text_to_nbt(&self.name)
     }
     fn get_hash(&self) -> i32 {
-        get_str_hash(self.name.clone().get_text().as_str()) as i32
+        get_text_hash(&self.name) as i32
     }
     default_impl!(CustomName);
 }
@@ -166,9 +161,6 @@ impl DataComponentImpl for ItemNameImpl {
         let mut component = NbtCompound::new();
         component.put_string("translate", self.name.to_string());
         NbtTag::Compound(component)
-    }
-    fn get_hash(&self) -> i32 {
-        get_str_hash(&self.name) as i32
     }
     default_impl!(ItemName);
 }
@@ -212,6 +204,9 @@ impl LoreImpl {
 impl DataComponentImpl for LoreImpl {
     fn write_data(&self) -> NbtTag {
         NbtTag::List(self.lines.iter().map(text_to_nbt).collect())
+    }
+    fn get_hash(&self) -> i32 {
+        get_list_hash(self.lines.iter().map(get_text_hash)) as i32
     }
     default_impl!(Lore);
 }
@@ -281,10 +276,6 @@ impl RarityImpl {
 impl DataComponentImpl for RarityImpl {
     fn write_data(&self) -> NbtTag {
         NbtTag::String(self.rarity.to_name().into())
-    }
-
-    fn get_hash(&self) -> i32 {
-        crate::data_component_impl::get_i32_hash(self.rarity.to_id()) as i32
     }
 
     default_impl!(Rarity);
@@ -395,6 +386,9 @@ impl EnchantmentGlintOverrideImpl {
 impl DataComponentImpl for EnchantmentGlintOverrideImpl {
     fn write_data(&self) -> NbtTag {
         NbtTag::Byte(self.glint as i8)
+    }
+    fn get_hash(&self) -> i32 {
+        get_bool_hash(self.glint) as i32
     }
     default_impl!(EnchantmentGlintOverride);
 }
