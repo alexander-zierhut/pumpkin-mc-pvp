@@ -508,6 +508,8 @@ impl Player {
                 && victim_entity.velocity_dirty.swap(false, Ordering::SeqCst)
             {
                 victim_entity.send_velocity();
+                // vanilla `Player.attack` too: the hit's `syncVelocity` is used up by this packet
+                victim_entity.sync_velocity.store(false, Ordering::SeqCst);
                 victim_entity.velocity.store(motion);
                 player.legacy_server_motion.store(motion);
             }
