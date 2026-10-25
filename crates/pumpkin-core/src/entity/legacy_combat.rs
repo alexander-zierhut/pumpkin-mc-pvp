@@ -303,6 +303,9 @@ fn gaussian() -> f64 {
 /// 1.8 `EntityArrow(world, shooter, velocity)`: spawn position and motion of a bow arrow.
 ///
 /// The shooter's own movement is not inherited.
+/// The spawn point is on the look ray like 26.x (0.1 below the eyes): 1.8 also moved it 0.16 to the
+/// shooter's right, so every arrow landed 0.16 right of the crosshair. That offset is left out on
+/// purpose; launch speed, spread and flight stay 1.8.
 #[must_use]
 pub fn arrow_launch(
     feet: Vector3<f64>,
@@ -314,11 +317,7 @@ pub fn arrow_launch(
 ) -> (Vector3<f64>, Vector3<f64>) {
     let yaw_rad = f64::from(yaw.to_radians());
     let pitch_rad = f64::from(pitch.to_radians());
-    let position = Vector3::new(
-        feet.x - yaw_rad.cos() * 0.16,
-        feet.y + eye_height - 0.1,
-        feet.z - yaw_rad.sin() * 0.16,
-    );
+    let position = Vector3::new(feet.x, feet.y + eye_height - 0.1, feet.z);
     let direction = Vector3::new(
         -yaw_rad.sin() * pitch_rad.cos(),
         -pitch_rad.sin(),
@@ -703,8 +702,8 @@ mod tests {
     }
 
     #[test]
-    fn arrow_launch_has_no_momentum_and_1_8_offset() {
-        // yaw 0 (towards +z), level: spawn 0.16 to the -x side, 0.1 below the eyes
+    fn arrow_launch_has_no_momentum_and_starts_on_the_look_ray() {
+        // yaw 0 (towards +z), level: spawn 0.1 below the eyes, no sideways offset
         let (pos, vel) = arrow_launch(
             Vector3::new(0.0, 100.0, 0.0),
             1.62,
@@ -713,7 +712,7 @@ mod tests {
             1.0,
             Some((0.0, 0.0, 0.0)),
         );
-        assert!(close(pos.x, -0.16) && close(pos.y, 101.52) && close(pos.z, 0.0));
+        assert!(close(pos.x, 0.0) && close(pos.y, 101.52) && close(pos.z, 0.0));
         assert!(close(vel.x, 0.0) && close(vel.y, 0.0) && close(vel.z, 3.0));
         // half drawn: half speed
         let (_, vel) = arrow_launch(
