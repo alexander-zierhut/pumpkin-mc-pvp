@@ -16,7 +16,7 @@ use pumpkin_util::math::position::BlockPos;
 use pumpkin_util::math::vector3::Vector3;
 
 use super::arrow::ArrowPickup;
-use super::{ProjectileHit, calculate_ray_intersection};
+use super::{ProjectileHit, calculate_ray_intersection, check_left_owner, rides_with_owner};
 
 pub struct TridentEntity {
     pub entity: Entity,
@@ -28,6 +28,8 @@ pub struct TridentEntity {
     pub life: AtomicU32,
     pub shake_time: AtomicU8,
     pub has_hit: AtomicBool,
+    /// Vanilla `Projectile.leftOwner`, see [`check_left_owner`].
+    pub left_owner: AtomicBool,
     pub last_block_pos: Arc<std::sync::RwLock<Option<BlockPos>>>,
 }
 
@@ -49,6 +51,7 @@ impl TridentEntity {
             life: AtomicU32::new(0),
             shake_time: AtomicU8::new(0),
             has_hit: AtomicBool::new(false),
+            left_owner: AtomicBool::new(false),
             last_block_pos: Arc::new(std::sync::RwLock::new(None)),
         }
     }
@@ -74,6 +77,7 @@ impl TridentEntity {
             life: AtomicU32::new(0),
             shake_time: AtomicU8::new(0),
             has_hit: AtomicBool::new(false),
+            left_owner: AtomicBool::new(false),
             last_block_pos: Arc::new(std::sync::RwLock::new(None)),
         }
     }
@@ -150,6 +154,10 @@ impl TridentEntity {
             return true;
         }
 
+        if rides_with_owner(&self.left_owner, self_ent, self.owner_id, other_ent) {
+            return true;
+        }
+
         // Skip other projectiles and item entities
         if other_ent.entity_type == &pumpkin_data::entity::EntityType::ARROW
             || other_ent.entity_type == &pumpkin_data::entity::EntityType::TRIDENT
@@ -190,6 +198,7 @@ impl EntityBase for TridentEntity {
         }
 
         // Trident is flying
+        check_left_owner(&self.left_owner, entity, self.owner_id);
         let start_pos = entity.pos.load();
         let mut velocity = entity.velocity.load();
 

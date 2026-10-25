@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::entity::experience_orb::ExperienceOrbEntity;
 use crate::entity::item::ItemEntity;
-use crate::entity::projectile::{ProjectileHit, is_projectile};
+use crate::entity::projectile::{ProjectileHit, check_left_owner, is_projectile, rides_with_owner};
 use crate::world::loot::{LootContextParameters, LootTableHandle, generate_loot_from_handle};
 use crate::{
     entity::{Entity, EntityBase, living::LivingEntity, player::Player},
@@ -24,6 +24,8 @@ pub struct FishingBobberEntity {
     pub hooked_entity_id: AtomicI32,
     pub in_ground: AtomicBool,
     pub has_hit: AtomicBool,
+    /// Vanilla `Projectile.leftOwner`, see [`check_left_owner`].
+    pub left_owner: AtomicBool,
     pub wait_countdown: AtomicI32,
     pub bite_countdown: AtomicI32,
 }
@@ -50,6 +52,7 @@ impl FishingBobberEntity {
             hooked_entity_id: AtomicI32::new(0),
             in_ground: AtomicBool::new(false),
             has_hit: AtomicBool::new(false),
+            left_owner: AtomicBool::new(false),
             wait_countdown: AtomicI32::new(wait_ticks),
             bite_countdown: AtomicI32::new(0),
         }
@@ -170,6 +173,7 @@ impl FishingBobberEntity {
             }
         }
 
+        check_left_owner(&self.left_owner, entity, Some(self.owner_id));
         let mut velocity = entity.velocity.load();
         let start_pos = entity.pos.load();
 
@@ -251,7 +255,15 @@ impl FishingBobberEntity {
                 continue;
             }
 
-            if is_projectile(cand.get_entity().entity_type) || cand.is_spectator() {
+            if is_projectile(cand.get_entity().entity_type)
+                || cand.is_spectator()
+                || rides_with_owner(
+                    &self.left_owner,
+                    entity,
+                    Some(self.owner_id),
+                    cand.get_entity(),
+                )
+            {
                 continue;
             }
 

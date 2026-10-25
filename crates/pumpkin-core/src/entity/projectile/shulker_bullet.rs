@@ -42,6 +42,8 @@ pub struct ShulkerBulletEntity {
     target_delta_y: AtomicCell<f64>,
     target_delta_z: AtomicCell<f64>,
     has_hit: AtomicBool,
+    /// Vanilla `Projectile.leftOwner`, see [`super::check_left_owner`].
+    left_owner: AtomicBool,
     /// Tick counter; bullet is discarded after ~150 ticks if it never reaches its target
     age: AtomicI32,
 }
@@ -82,6 +84,7 @@ impl ShulkerBulletEntity {
             target_delta_y: AtomicCell::new(0.0),
             target_delta_z: AtomicCell::new(0.0),
             has_hit: AtomicBool::new(false),
+            left_owner: AtomicBool::new(false),
             age: AtomicI32::new(0),
         };
 
@@ -265,6 +268,7 @@ impl ShulkerBulletEntity {
             target_delta_y: AtomicCell::new(0.0),
             target_delta_z: AtomicCell::new(0.0),
             has_hit: AtomicBool::new(false),
+            left_owner: AtomicBool::new(false),
             age: AtomicI32::new(0),
         }
     }
@@ -325,6 +329,7 @@ impl EntityBase for ShulkerBulletEntity {
         if self.has_hit.load(Ordering::Relaxed) {
             return;
         }
+        super::check_left_owner(&self.left_owner, &self.entity, Some(self.owner_id));
 
         // Discard bullet after 150 ticks if it never hits anything
         let age = self.age.fetch_add(1, Ordering::Relaxed) + 1;
@@ -458,7 +463,9 @@ impl EntityBase for ShulkerBulletEntity {
                 continue;
             }
             // Never hit the owner shulker
-            if he.entity_id == self.owner_id {
+            if he.entity_id == self.owner_id
+                || super::rides_with_owner(&self.left_owner, entity, Some(self.owner_id), he)
+            {
                 continue;
             }
             // Must be alive
