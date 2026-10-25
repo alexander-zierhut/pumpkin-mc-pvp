@@ -284,3 +284,10 @@ webpki-root-certs = { version = "1.0.11", default-features = false }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 zip = { version = "9.0", default-features = false, features = ["deflate-flate2"] }
 
+
+# LAN BedWars build: release speed without fat LTO, so rebuilds after a patch take minutes, not an hour
+[profile.lan]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
+incremental = true
