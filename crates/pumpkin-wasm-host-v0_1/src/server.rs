@@ -1,4 +1,5 @@
 use pumpkin_util::text::TextComponent;
+use std::sync::Arc;
 use wasmtime::component::{Access, HasSelf, Resource};
 
 use crate::pumpkin::plugin::enchantments::{
@@ -707,6 +708,48 @@ impl pumpkin::plugin::server::HostServerWithStore<PluginHostState> for HasSelf<P
             })
             .await
     }
+
+    async fn run_command(
+        host: Access<'_, PluginHostState, Self>,
+        _rep: Resource<Server>,
+        command: String,
+    ) -> wasmtime::Result<Vec<String>> {
+        run_command_captured(host, command).await
+    }
+}
+
+/// Runs a command as an RCON-like sender with console permissions and returns its output.
+async fn run_command_captured(
+    mut host: Access<'_, PluginHostState, HasSelf<PluginHostState>>,
+    command: String,
+) -> wasmtime::Result<Vec<String>> {
+    let (server, plugin) = {
+        let state = host.get();
+        let server = state
+            .server
+            .clone()
+            .ok_or_else(|| wasmtime::Error::msg("Server not available"))?;
+        let plugin = state
+            .plugin
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| wasmtime::Error::msg("Plugin instance not available"))?;
+        (server, plugin)
+    };
+    let output = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let sender = CommandSender::Rcon(Arc::clone(&output));
+    plugin
+        .store
+        .pump_blocking(&mut host, move || {
+            let dispatcher = server.command_dispatcher.load();
+            dispatcher.handle_command(&sender.into_source(&server), &command);
+        })
+        .await?;
+    let lines = output
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    Ok(lines)
 }
 
 impl pumpkin::plugin::server::HostOpManager for PluginHostState {

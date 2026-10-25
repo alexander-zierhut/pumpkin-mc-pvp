@@ -1,6 +1,7 @@
 use management::ManagementServerConfig;
 use proxy::ProxyConfig;
 use query::QueryConfig;
+use rcon::RCONConfig;
 use serde::{Deserialize, Serialize};
 
 use crate::LANBroadcastConfig;
@@ -23,6 +24,8 @@ pub mod management;
 pub mod proxy;
 /// GS4 Query protocol configuration.
 pub mod query;
+/// RCON remote console configuration (kept next to the management protocol for admin tools and tests).
+pub mod rcon;
 
 /// Packet limiter configuration.
 pub mod packet_limiter;
@@ -39,6 +42,8 @@ pub struct NetworkingConfig {
     pub query: QueryConfig,
     /// Management server (MSMP) configuration.
     pub management: ManagementServerConfig,
+    /// RCON (remote console) configuration.
+    pub rcon: RCONConfig,
     /// Proxy-related networking settings.
     pub proxy: ProxyConfig,
     /// LAN broadcast settings.

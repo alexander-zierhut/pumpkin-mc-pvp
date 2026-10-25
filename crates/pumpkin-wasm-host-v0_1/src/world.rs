@@ -576,6 +576,19 @@ impl pumpkin::plugin::particles::Host for PluginHostState {}
 impl pumpkin::plugin::sounds::Host for PluginHostState {}
 
 impl pumpkin::plugin::world::HostWorld for PluginHostState {
+    fn get_entity_by_id(
+        &mut self,
+        world: Resource<World>,
+        id: i32,
+    ) -> wasmtime::Result<Option<Resource<pumpkin::plugin::world::Entity>>> {
+        let world = self.get(&world)?.clone();
+        let entity: Option<Arc<dyn pumpkin_core::entity::EntityBase>> = world
+            .get_player_by_id(id)
+            .map(|p| p as Arc<dyn pumpkin_core::entity::EntityBase>)
+            .or_else(|| world.get_entity_by_id(id));
+        entity.map(|e| self.add(e)).transpose()
+    }
+
     fn get_id(&mut self, world: Resource<World>) -> wasmtime::Result<String> {
         Ok(self.get(&world)?.get_world_name().to_string())
     }
@@ -1220,6 +1233,50 @@ impl pumpkin::plugin::world::HostWorldWithStore<PluginHostState> for HasSelf<Plu
             .pump_blocking(&mut host, move || world.spawn_entity(spawned_entity))
             .await?;
         host.get().add(entity)
+    }
+
+    async fn drop_item(
+        mut host: Access<'_, PluginHostState, Self>,
+        world: Resource<World>,
+        pos: WitPosition,
+        item: Resource<crate::pumpkin::plugin::item_stack::ItemStack>,
+        velocity: Option<WitPosition>,
+        pickup_delay: u32,
+        can_merge: bool,
+    ) -> wasmtime::Result<Resource<pumpkin::plugin::world::Entity>> {
+        let (world, plugin) = world_and_plugin(host.get(), &world)?;
+        let item_stack = host.get().take(item)?.lock().await.clone();
+        let pos = pumpkin_util::math::vector3::Vector3::new(pos.0, pos.1, pos.2);
+        // vanilla `Block.popResource` spread when no velocity is given
+        let velocity = velocity.map_or_else(
+            || {
+                pumpkin_util::math::vector3::Vector3::new(
+                    rand::random::<f64>().mul_add(0.2, -0.1),
+                    0.2,
+                    rand::random::<f64>().mul_add(0.2, -0.1),
+                )
+            },
+            |v| pumpkin_util::math::vector3::Vector3::new(v.0, v.1, v.2),
+        );
+        let entity = pumpkin_core::entity::Entity::new(
+            world.clone(),
+            pos,
+            &pumpkin_data::entity::EntityType::ITEM,
+        );
+        let item = pumpkin_core::entity::item::ItemEntity::new_with_velocity(
+            entity,
+            item_stack,
+            velocity,
+            pickup_delay.min(u32::from(u8::MAX)) as u8,
+        );
+        item.set_merge_disabled(!can_merge);
+        let item_entity: Arc<dyn pumpkin_core::entity::EntityBase> = Arc::new(item);
+        let spawned = Arc::clone(&item_entity);
+        plugin
+            .store
+            .pump_blocking(&mut host, move || world.spawn_entity(spawned))
+            .await?;
+        host.get().add(item_entity)
     }
 
     async fn strike_lightning(
