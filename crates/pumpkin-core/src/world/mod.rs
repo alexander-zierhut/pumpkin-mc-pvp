@@ -233,6 +233,8 @@ pub struct World {
     pub entities: ArcSwap<Vec<Arc<dyn EntityBase>>>,
     pub(crate) entity_index: Arc<EntityIndex>,
     island_schedule: std::sync::Mutex<entity_islands::Schedule>,
+    /// How long the natural spawning of the last tick took, summed over its batches.
+    spawn_work_nanos: std::sync::atomic::AtomicU64,
     /// The world's scoreboard, used for tracking scores, objectives, and display information.
     pub scoreboard: std::sync::Mutex<Scoreboard>,
     /// The world's worldborder, defining the playable area and controlling its expansion or contraction.
@@ -391,6 +393,7 @@ impl World {
             entities: ArcSwap::new(Arc::new(Vec::new())),
             entity_index: Arc::default(),
             island_schedule: std::sync::Mutex::default(),
+            spawn_work_nanos: std::sync::atomic::AtomicU64::new(0),
             scoreboard: std::sync::Mutex::new(Scoreboard::default()),
             worldborder: std::sync::Mutex::new(Worldborder::new(
                 0.0,
@@ -1521,6 +1524,13 @@ impl World {
 
     #[expect(clippy::too_many_lines)]
     pub fn tick(self: &Arc<Self>, server: &Arc<Server>) {
+        /// Below twice these sizes the loops run on the calling thread: waking idle Rayon workers
+        /// for a few microseconds of work costs more than the work, because the woken workers
+        /// spin (`sched_yield`) looking for more before they sleep again.
+        const PLAYER_TICK_MIN_LEN: usize = 8;
+        const ENTITY_FILTER_MIN_LEN: usize = 1024;
+        /// In batches of 16 block entities.
+        const BLOCK_ENTITY_MIN_BATCHES: usize = 4;
         let start = std::time::Instant::now();
 
         self.flush_block_updates();
@@ -1556,7 +1566,7 @@ impl World {
         let players = self.players.load();
         let player_count = players.len();
         let players_cache: Vec<_> = players
-            .par_iter()
+            .iter()
             .map(|player| {
                 let entity = player.get_entity();
                 let pos = entity.pos.load();
@@ -1571,10 +1581,13 @@ impl World {
 
         let t_players = std::time::Instant::now();
         let player_handle = handle.clone();
-        players.par_iter().for_each(|player| {
-            let _guard = player_handle.enter();
-            player.tick(server);
-        });
+        players
+            .par_iter()
+            .with_min_len(PLAYER_TICK_MIN_LEN)
+            .for_each(|player| {
+                let _guard = player_handle.enter();
+                player.tick(server);
+            });
         let player_elapsed = t_players.elapsed();
 
         let entities_to_tick = self.entities.load();
@@ -1590,6 +1603,7 @@ impl World {
         let t_entities = std::time::Instant::now();
         let tickable: Vec<_> = entities_to_tick
             .par_iter()
+            .with_min_len(ENTITY_FILTER_MIN_LEN)
             .filter_map(|entity| {
                 let entity_pos = entity.get_entity().pos.load();
                 let entity_chunk = Vector2::new(
@@ -1694,13 +1708,15 @@ impl World {
                 }
             }
         };
-        if let Some(islands) = islands {
+        let entity_work_nanos = if let Some(islands) = islands {
+            let work_nanos = std::sync::atomic::AtomicU64::new(0);
             islands
                 .islands
                 .par_iter()
                 .with_max_len(1)
                 .for_each(|island| {
                     let _guard = entity_handle.enter();
+                    let island_start = std::time::Instant::now();
                     for &index in island {
                         #[cfg(debug_assertions)]
                         entity_islands::enter(&islands, tickable[index].0.get_entity().entity_id);
@@ -1709,14 +1725,21 @@ impl World {
                     order::set_entity_order(None);
                     #[cfg(debug_assertions)]
                     entity_islands::leave();
+                    work_nanos.fetch_add(island_start.elapsed().as_nanos() as u64, Relaxed);
                 });
+            work_nanos.into_inner()
         } else {
             let _guard = entity_handle.enter();
             for index in 0..tickable.len() {
                 tick_entity(index);
             }
             order::set_entity_order(None);
-        }
+            t_entities.elapsed().as_nanos() as u64
+        };
+        self.island_schedule
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_work(entity_work_nanos);
         self.order_tick_spawns();
         let entity_elapsed = t_entities.elapsed();
 
@@ -1740,12 +1763,15 @@ impl World {
 
         let t_be = std::time::Instant::now();
         let be_handle = handle;
-        block_entities.par_chunks(16).for_each(|batch| {
-            let _guard = be_handle.enter();
-            for be in batch {
-                be.tick(self);
-            }
-        });
+        block_entities
+            .par_chunks(16)
+            .with_min_len(BLOCK_ENTITY_MIN_BATCHES)
+            .for_each(|batch| {
+                let _guard = be_handle.enter();
+                for be in batch {
+                    be.tick(self);
+                }
+            });
         // Drained after all ticks, so changes (hopper -> chest) land in the same tick.
         let guard = be_handle.enter();
         self.flush_comparator_updates(&block_entities);
@@ -2075,7 +2101,13 @@ impl World {
     #[expect(clippy::too_many_lines)]
     pub fn tick_chunks(self: &Arc<Self>, server: &Arc<Server>) {
         const BATCH_SIZE: usize = 32;
+        /// Below twice this many batches the ticks run on the calling thread (see `World::tick`).
+        const MIN_BATCHES: usize = 4;
         const INHABITED_TIME_BATCH_SIZE: usize = 1024;
+        /// Natural spawning goes through every active chunk, but per chunk it is mostly a few
+        /// cap checks: below this much work on the last tick the chunks are handled in order on
+        /// the calling thread instead of waking all idle Rayon workers each tick.
+        const MIN_PARALLEL_SPAWN_NANOS: u64 = 1_000_000;
         let random_tick_speed = self.level_info.load().game_rules.random_tick_speed;
 
         let active_chunks = self
@@ -2092,6 +2124,7 @@ impl World {
         tick_data
             .block_ticks
             .par_chunks(BATCH_SIZE)
+            .with_min_len(MIN_BATCHES)
             .for_each(|batch| {
                 let _guard = block_handle.enter();
                 let world = world.clone();
@@ -2114,6 +2147,7 @@ impl World {
         tick_data
             .fluid_ticks
             .par_chunks(BATCH_SIZE)
+            .with_min_len(MIN_BATCHES)
             .for_each(|batch| {
                 let _guard = fluid_handle.enter();
                 let world = world.clone();
@@ -2132,6 +2166,7 @@ impl World {
         tick_data
             .random_ticks
             .par_chunks(BATCH_SIZE)
+            .with_min_len(MIN_BATCHES)
             .for_each(|batch| {
                 let _guard = random_handle.enter();
                 let world = world.clone();
@@ -2189,7 +2224,7 @@ impl World {
             spawn_passives,
         ));
 
-        // 5. Parallel Chunk Spawners via Rayon
+        // 5. Chunk Spawners, via Rayon when they took long enough on the last tick
         if !spawn_list.is_empty() {
             let mut spawning_chunks = Vec::new();
             for pos in active_chunks.iter() {
@@ -2200,17 +2235,29 @@ impl World {
 
             spawning_chunks.shuffle(&mut rng());
 
-            let world = self.clone();
             let spawn_handle = handle;
-            spawning_chunks.par_chunks(8).for_each(|batch| {
-                let _guard = spawn_handle.enter();
-                let world = world.clone();
-                let s_list = spawn_list.clone();
-                let s_state = spawn_state.clone();
+            let spawn_state = Arc::clone(&spawn_state);
+            let spawn_batch = |batch: &[(Vector2<i32>, Arc<ChunkData>)]| {
+                let start = std::time::Instant::now();
                 for (pos, chunk) in batch {
-                    world.tick_spawning_chunk(*pos, chunk, &s_list, &s_state);
+                    self.tick_spawning_chunk(*pos, chunk, &spawn_list, &spawn_state);
                 }
-            });
+                start.elapsed().as_nanos() as u64
+            };
+            let work_nanos: u64 = if self.spawn_work_nanos.load(Relaxed) >= MIN_PARALLEL_SPAWN_NANOS
+            {
+                spawning_chunks
+                    .par_chunks(8)
+                    .map(|batch| {
+                        let _guard = spawn_handle.enter();
+                        spawn_batch(batch)
+                    })
+                    .sum()
+            } else {
+                let _guard = spawn_handle.enter();
+                spawning_chunks.chunks(8).map(spawn_batch).sum()
+            };
+            self.spawn_work_nanos.store(work_nanos, Relaxed);
         }
 
         // Batch these cheap lookups and atomic increments to avoid waking Rayon

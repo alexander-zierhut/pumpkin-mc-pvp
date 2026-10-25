@@ -82,6 +82,11 @@ impl PlanningBudget {
 }
 
 const MIN_PARALLEL_ENTITIES: usize = 16;
+/// Entity ticks that took less than this together on the last tick run in order without planning.
+/// Islands of cheap entities (a few hundred item entities) are microseconds of work each, and
+/// handing them to Rayon wakes idle workers that then spin (`sched_yield`) looking for more work,
+/// which costs several times the ticks themselves.
+const MIN_PARALLEL_WORK_NANOS: u64 = 1_000_000;
 const SERIAL_PROBE_INTERVAL: u8 = 20;
 const PARALLEL_SHARE_DIVISOR: usize = 4;
 
@@ -89,6 +94,8 @@ const PARALLEL_SHARE_DIVISOR: usize = 4;
 pub(super) struct Schedule {
     entity_count: usize,
     ticks_until_probe: u8,
+    /// How long the last tick's entity ticks took, summed over the islands.
+    work_nanos: u64,
 }
 
 impl Schedule {
@@ -97,7 +104,7 @@ impl Schedule {
             self.entity_count = entity_count;
             self.ticks_until_probe = 0;
         }
-        if entity_count < MIN_PARALLEL_ENTITIES {
+        if entity_count < MIN_PARALLEL_ENTITIES || self.work_nanos < MIN_PARALLEL_WORK_NANOS {
             return false;
         }
         if self.ticks_until_probe > 0 {
@@ -105,6 +112,11 @@ impl Schedule {
             return false;
         }
         true
+    }
+
+    /// Records how long this tick's entity ticks took (summed over the islands when parallel).
+    pub(super) const fn record_work(&mut self, nanos: u64) {
+        self.work_nanos = nanos;
     }
 
     pub(super) const fn record_plan(&mut self, largest_island: usize) -> bool {
@@ -1039,6 +1051,7 @@ mod tests {
     #[test]
     fn serial_schedule_retries_after_twenty_ticks_or_a_count_change() {
         let mut schedule = Schedule::default();
+        schedule.record_work(MIN_PARALLEL_WORK_NANOS);
         assert!(!schedule.should_plan(1));
         assert!(schedule.should_plan(64));
         assert!(!schedule.record_plan(64));
@@ -1060,6 +1073,21 @@ mod tests {
         assert!(schedule.should_plan(65));
         assert!(schedule.record_plan(48));
         assert!(schedule.should_plan(65));
+    }
+
+    #[test]
+    fn cheap_entity_ticks_are_not_planned() {
+        let mut schedule = Schedule::default();
+        // nothing measured yet (first tick) and many cheap entities: tick them in order
+        assert!(!schedule.should_plan(500));
+        schedule.record_work(MIN_PARALLEL_WORK_NANOS - 1);
+        assert!(!schedule.should_plan(500));
+        schedule.record_work(MIN_PARALLEL_WORK_NANOS);
+        assert!(schedule.should_plan(500));
+        assert!(schedule.record_plan(1));
+        // the islands got cheap again
+        schedule.record_work(10_000);
+        assert!(!schedule.should_plan(500));
     }
 
     #[expect(

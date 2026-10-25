@@ -45,11 +45,23 @@ use rsa::RsaPublicKey;
 use std::fs;
 use std::net::IpAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicI64, AtomicU32, AtomicU64};
 use std::{future::Future, sync::atomic::Ordering, time::Duration};
 use tokio::sync::OnceCell;
 use tokio::task::JoinHandle;
 use tokio_util::task::TaskTracker;
+
+/// Worlds tick in parallel only when their ticks took at least this long together on the last tick.
+/// Below it they tick one after another on the ticker thread: handing a few sub-millisecond world
+/// ticks to Rayon wakes idle workers, which then spin (`sched_yield`) looking for more work and burn
+/// several times the CPU of the ticks themselves (a LAN server with three small worlds idled at
+/// ~6% of a core, ~0.5ms of it real work).
+const PARALLEL_WORLDS_MIN_NANOS: u64 = 2_000_000;
+
+/// Whether the worlds tick in parallel this tick, from the summed world tick time of the last one.
+const fn worlds_in_parallel(world_count: usize, last_world_tick_nanos: u64) -> bool {
+    world_count > 1 && last_world_tick_nanos >= PARALLEL_WORLDS_MIN_NANOS
+}
 
 pub mod builtin_game_tests;
 mod connection_cache;
@@ -138,6 +150,8 @@ pub struct Server {
     pub aggregated_tick_times_nanos: AtomicI64,
     /// Total number of ticks processed by the server
     pub tick_count: AtomicI32,
+    /// Summed duration of the world ticks of the last tick, see [`PARALLEL_WORLDS_MIN_NANOS`].
+    world_tick_nanos: AtomicU64,
     /// Owns the server-wide tick profiling session used by `/debug`.
     pub(crate) debug_profiler: debug_profiler::DebugProfiler,
     /// Random unique Server ID used by Bedrock Edition
@@ -314,6 +328,7 @@ impl Server {
             tick_times_nanos: std::sync::Mutex::new([0; 100]),
             aggregated_tick_times_nanos: AtomicI64::new(0),
             tick_count: AtomicI32::new(0),
+            world_tick_nanos: AtomicU64::new(0),
             debug_profiler: debug_profiler::DebugProfiler::new(),
             tasks: TaskTracker::new(),
             runtime: tokio::runtime::Handle::current(),
@@ -1199,10 +1214,22 @@ impl Server {
 
         let worlds = self.worlds.load();
         let handle = self.runtime.clone();
-        worlds.par_iter().for_each(|world| {
-            let _guard = handle.enter();
+        let world_tick_nanos = AtomicU64::new(0);
+        let tick_world = |world: &Arc<World>| {
+            let start = std::time::Instant::now();
             world.tick(self);
-        });
+            world_tick_nanos.fetch_add(start.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        };
+        if worlds_in_parallel(worlds.len(), self.world_tick_nanos.load(Ordering::Relaxed)) {
+            worlds.par_iter().for_each(|world| {
+                let _guard = handle.enter();
+                tick_world(world);
+            });
+        } else {
+            worlds.iter().for_each(tick_world);
+        }
+        self.world_tick_nanos
+            .store(world_tick_nanos.into_inner(), Ordering::Relaxed);
 
         // Global tasks
         self.player_data_storage.tick(self);
@@ -1333,5 +1360,19 @@ impl Server {
                 plugin_name,
             );
         self.plugin_manager.fire(self, &mut disable_event).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_world_ticks_run_one_after_another() {
+        assert!(!worlds_in_parallel(3, 0));
+        assert!(!worlds_in_parallel(3, PARALLEL_WORLDS_MIN_NANOS - 1));
+        assert!(worlds_in_parallel(3, PARALLEL_WORLDS_MIN_NANOS));
+        // a single world has nothing to run beside it
+        assert!(!worlds_in_parallel(1, u64::MAX));
     }
 }
