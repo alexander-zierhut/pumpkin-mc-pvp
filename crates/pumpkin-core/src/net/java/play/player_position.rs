@@ -306,12 +306,13 @@ impl JavaClient {
     }
 
     pub fn force_tp(&self, player: &Arc<Player>, position: Vector3<f64>) {
-        let teleport_id = player.teleport_id_count.fetch_add(1, Ordering::Relaxed) + 1;
-        *player
+        // id, awaited teleport and packet under one lock, like `Player::request_teleport`
+        let mut awaiting_teleport = player
             .awaiting_teleport
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some((teleport_id.into(), position));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let teleport_id = player.teleport_id_count.fetch_add(1, Ordering::Relaxed) + 1;
+        *awaiting_teleport = Some((teleport_id.into(), position));
         // The confirm puts the player at the awaited position, so the client has to be sent the same one.
         player.try_send_client_packet(&CPlayerPosition::new(
             teleport_id.into(),
@@ -321,5 +322,6 @@ impl JavaClient {
             player.get_entity().pitch.load(),
             Vec::new(),
         ));
+        drop(awaiting_teleport);
     }
 }

@@ -4287,19 +4287,31 @@ impl Player {
             }
         }
 
-        let i = self.teleport_id_count.fetch_add(1, Ordering::Relaxed);
-        self.chunk_send_epoch.fetch_add(1, Ordering::Relaxed);
-        let teleport_id = i + 1;
         // Under the lock `apply_client_move` checks: a move packet still in flight can no longer
-        // put the player back.
+        // put the player back. The id is also handed out and the packet queued under it, so two
+        // teleports at once reach the client in id order and the awaited one is the last it gets.
         let mut awaiting_teleport = self
             .awaiting_teleport
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if matches!(self.client.as_ref(), ClientPlatform::Java(_)) {
-            *awaiting_teleport = Some((teleport_id.into(), position));
-        }
+        let teleport_id = self.teleport_id_count.fetch_add(1, Ordering::Relaxed) + 1;
+        self.chunk_send_epoch.fetch_add(1, Ordering::Relaxed);
         self.living_entity.entity.set_pos(position);
+        if let ClientPlatform::Java(client) = self.client.as_ref() {
+            *awaiting_teleport = Some((teleport_id.into(), position));
+            let packet = CPlayerPosition::new(
+                teleport_id.into(),
+                position,
+                Vector3::new(0.0, 0.0, 0.0),
+                yaw,
+                pitch,
+                // TODO
+                Vec::new(),
+            );
+            if let Ok(data) = client.serialize_packet(&packet) {
+                client.try_enqueue_packet(data);
+            }
+        }
         drop(awaiting_teleport);
         // Vanilla `ServerPlayer.teleportTo` moves the chunk view right away; waiting for the
         // client's next position packet leaves a standing player without chunks for up to a second.
@@ -4309,20 +4321,8 @@ impl Player {
         let entity = &self.living_entity.entity;
         entity.set_rotation(yaw, pitch);
         match self.client.as_ref() {
-            ClientPlatform::Java(client) => {
-                let packet = CPlayerPosition::new(
-                    teleport_id.into(),
-                    position,
-                    Vector3::new(0.0, 0.0, 0.0),
-                    yaw,
-                    pitch,
-                    // TODO
-                    Vec::new(),
-                );
-                if let Ok(data) = client.serialize_packet(&packet) {
-                    client.try_enqueue_packet(data);
-                }
-            }
+            // queued above, under the teleport lock
+            ClientPlatform::Java(_) => {}
             ClientPlatform::Bedrock(client) => {
                 let packet = CBedrockMovePlayer::new(
                     VarULong(self.entity_id() as u64),
