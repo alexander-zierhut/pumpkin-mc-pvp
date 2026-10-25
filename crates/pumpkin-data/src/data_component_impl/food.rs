@@ -626,7 +626,14 @@ impl DataComponentImpl for PotionContentsImpl {
     fn write_data(&self) -> NbtTag {
         let mut compound = NbtCompound::new();
         if let Some(potion_id) = self.potion_id {
-            compound.put_int("potion", potion_id);
+            // vanilla stores the registry name ("minecraft:healing"); read_data accepts both
+            match u8::try_from(potion_id)
+                .ok()
+                .and_then(crate::potion::Potion::from_id)
+            {
+                Some(potion) => compound.put_string("potion", format!("minecraft:{}", potion.name)),
+                None => compound.put_int("potion", potion_id),
+            }
         }
         if let Some(color) = self.custom_color {
             compound.put_int("custom_color", color);
@@ -701,8 +708,26 @@ impl Hash for PotionDurationScaleImpl {
 
 #[cfg(test)]
 mod tests {
-    use super::{DataComponentImpl, PotionDurationScaleImpl};
+    use super::{DataComponentImpl, PotionContentsImpl, PotionDurationScaleImpl};
     use crate::item::Item;
+
+    #[test]
+    fn potion_contents_save_the_registry_name_like_vanilla() {
+        let healing = crate::potion::Potion::from_name("healing").unwrap();
+        let contents = PotionContentsImpl {
+            potion_id: Some(i32::from(healing.id)),
+            custom_color: None,
+            custom_effects: Vec::new(),
+            custom_name: None,
+        };
+        let tag = contents.write_data();
+        let compound = tag.extract_compound().unwrap();
+        assert_eq!(compound.get_string("potion"), Some("minecraft:healing"));
+        assert_eq!(
+            PotionContentsImpl::read_data(&tag).unwrap().potion_id,
+            contents.potion_id
+        );
+    }
 
     #[test]
     fn potion_duration_scale_round_trips_as_a_float() {
