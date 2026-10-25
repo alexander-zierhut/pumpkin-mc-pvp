@@ -184,12 +184,88 @@ impl ExplosionDamageCalculator for SimpleExplosionDamageCalculator {
     }
 }
 
+/// Explosion that only destroys an allow-list of blocks (e.g. blocks placed by players).
+///
+/// It has an optional fixed entity damage and entities that are not hurt. Blocks keep their vanilla blast
+/// resistance, so a resistant block still shields what lies behind it.
+pub struct FilteredExplosionCalculator {
+    allowed: rustc_hash::FxHashSet<BlockPos>,
+    fixed_damage: Option<f32>,
+    exempt_entities: Vec<i32>,
+    destroyed: std::sync::Mutex<rustc_hash::FxHashSet<BlockPos>>,
+}
+
+impl FilteredExplosionCalculator {
+    #[must_use]
+    pub fn new(
+        allowed: rustc_hash::FxHashSet<BlockPos>,
+        fixed_damage: Option<f32>,
+        exempt_entities: Vec<i32>,
+    ) -> Self {
+        Self {
+            allowed,
+            fixed_damage,
+            exempt_entities,
+            destroyed: std::sync::Mutex::new(rustc_hash::FxHashSet::default()),
+        }
+    }
+
+    /// The allowed blocks the explosion reached.
+    pub fn destroyed(&self) -> Vec<BlockPos> {
+        self.destroyed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .copied()
+            .collect()
+    }
+}
+
+impl ExplosionDamageCalculator for FilteredExplosionCalculator {
+    fn should_block_explode(
+        &self,
+        _explosion: &Explosion,
+        _world: &World,
+        pos: &BlockPos,
+        _block: &Block,
+        _power: f32,
+    ) -> bool {
+        if !self.allowed.contains(pos) {
+            return false;
+        }
+        self.destroyed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(*pos);
+        true
+    }
+
+    fn should_damage_entity(&self, _explosion: &Explosion, entity: &dyn EntityBase) -> bool {
+        !self
+            .exempt_entities
+            .contains(&entity.get_entity().entity_id)
+    }
+
+    fn get_entity_damage_amount(
+        &self,
+        explosion: &Explosion,
+        entity: &dyn EntityBase,
+        exposure: f32,
+    ) -> f32 {
+        self.fixed_damage.unwrap_or_else(|| {
+            DefaultExplosionDamageCalculator.get_entity_damage_amount(explosion, entity, exposure)
+        })
+    }
+}
+
 pub struct Explosion {
     power: f32,
     pos: Vector3<f64>,
     block_interaction: BlockInteraction,
     damage_calculator: Option<Arc<dyn ExplosionDamageCalculator>>,
     preserve_rails: bool,
+    /// Knockback for hit players: vanilla sends it in the explosion packet, the client adds it.
+    player_knockback: std::sync::Mutex<Vec<(i32, Vector3<f64>)>>,
 }
 
 impl Explosion {
@@ -201,6 +277,7 @@ impl Explosion {
             block_interaction,
             damage_calculator: None,
             preserve_rails: false,
+            player_knockback: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -432,8 +509,27 @@ impl Explosion {
             {
                 continue;
             }
-            entity.add_velocity(knockback);
+            if entity_base.get_player().is_some() {
+                // The player's own motion is client side: the explosion packet carries the push.
+                entity.velocity.store(entity.velocity.load() + knockback);
+                self.player_knockback
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push((entity.entity_id, knockback));
+            } else {
+                entity.add_velocity(knockback);
+            }
         }
+    }
+
+    /// Knockback this explosion gave the player with this entity id.
+    pub fn knockback_for(&self, entity_id: i32) -> Option<Vector3<f64>> {
+        self.player_knockback
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|(id, _)| *id == entity_id)
+            .map(|(_, kb)| *kb)
     }
 
     fn calculate_exposure(
