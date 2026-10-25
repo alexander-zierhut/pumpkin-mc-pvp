@@ -475,6 +475,12 @@ pub struct Player {
     pub ping: AtomicU32,
     /// The amount of ticks since the player's last attack.
     pub last_attacked_ticks: AtomicU32,
+    /// Movement of the last client position packet and the tick it arrived (inherited by projectiles).
+    pub legacy_movement: AtomicCell<(Vector3<f64>, i32)>,
+    /// The motion a 1.8 server keeps for this player, the legacy knockback input (see `legacy_motion`).
+    pub legacy_server_motion: AtomicCell<Vector3<f64>>,
+    /// Ground state of the previous tick for `tick_legacy_motion` (1.8 detects jumps on the server).
+    pub legacy_on_ground: AtomicBool,
     /// The player's last known experience level.
     pub last_sent_xp: AtomicI32,
     pub last_sent_health: AtomicI32,
@@ -778,6 +784,9 @@ impl Player {
             last_action_time: AtomicCell::new(std::time::Instant::now()),
             ping: AtomicU32::new(0),
             last_attacked_ticks: AtomicU32::new(0),
+            legacy_movement: AtomicCell::new((Vector3::new(0.0, 0.0, 0.0), i32::MIN / 2)),
+            legacy_server_motion: AtomicCell::new(Vector3::new(0.0, 0.0, 0.0)),
+            legacy_on_ground: AtomicBool::new(false),
             client_loaded: AtomicBool::new(initially_loaded),
             bedrock_spawned: AtomicBool::new(false),
             client_loaded_timeout: AtomicU32::new(if initially_loaded { 0 } else { 60 }),
@@ -1321,6 +1330,10 @@ impl Player {
     #[expect(clippy::too_many_lines)]
     pub fn attack(&self, victim: &Arc<dyn EntityBase>) {
         let world = self.world();
+        if let Some(cfg) = crate::entity::legacy_combat::config(&world) {
+            self.legacy_attack(victim, &cfg);
+            return;
+        }
         let Some(server) = world.server.upgrade() else {
             return;
         };
@@ -3035,6 +3048,10 @@ impl Player {
         }
 
         self.hunger_manager.tick(self);
+        if let Some(cfg) = crate::entity::legacy_combat::config(&self.world()) {
+            self.apply_legacy_attack_speed(&cfg);
+            self.tick_legacy_motion();
+        }
 
         // Vanilla updates pose in PlayerEntity#tick after super.tick().
         self.update_player_pose();
