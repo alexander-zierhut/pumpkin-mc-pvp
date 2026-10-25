@@ -35,8 +35,11 @@ pub trait DataComponentImpl: Send + Sync {
     fn write_data(&self) -> NbtTag {
         NbtTag::End
     }
+    /// Vanilla's component hash (`HashOps` of the component codec), compared with the hashes clients
+    /// send in `container_click`. The NBT of `write_data` matches the codec unless it has booleans
+    /// or fields the codec leaves out at their default; such components hash themselves.
     fn get_hash(&self) -> i32 {
-        0
+        get_nbt_hash(&self.write_data()) as i32
     }
     /// make sure other is the same type component, or it will panic
     fn equal(&self, other: &dyn DataComponentImpl) -> bool;
@@ -130,51 +133,192 @@ macro_rules! default_impl {
     };
 }
 
+// Vanilla `HashOps` value tags.
+const TAG_EMPTY: u8 = 1;
+const TAG_MAP_START: u8 = 2;
+const TAG_MAP_END: u8 = 3;
+const TAG_LIST_START: u8 = 4;
+const TAG_LIST_END: u8 = 5;
+const TAG_BYTE: u8 = 6;
+const TAG_SHORT: u8 = 7;
+const TAG_INT: u8 = 8;
+const TAG_LONG: u8 = 9;
+const TAG_FLOAT: u8 = 10;
+const TAG_DOUBLE: u8 = 11;
+const TAG_STRING: u8 = 12;
+const TAG_BOOLEAN: u8 = 13;
+const TAG_BYTE_ARRAY_START: u8 = 14;
+const TAG_BYTE_ARRAY_END: u8 = 15;
+const TAG_INT_ARRAY_START: u8 = 16;
+const TAG_INT_ARRAY_END: u8 = 17;
+const TAG_LONG_ARRAY_START: u8 = 18;
+const TAG_LONG_ARRAY_END: u8 = 19;
+
+fn get_tagged_hash(tag: u8, payload: &[u8]) -> u32 {
+    let mut digest = Digest::new();
+    digest.update(&[tag]);
+    digest.update(payload);
+    digest.finalize() as u32
+}
+
+/// Vanilla `HashOps.createString`: the length and the chars in UTF-16 (Java `putUnencodedChars`).
 pub fn get_str_hash(val: &str) -> u32 {
     let mut digest = Digest::new();
-    digest.update(&[12u8]);
-    digest.update(&(val.len() as u32).to_le_bytes());
-    let byte = val.as_bytes();
-    for i in byte {
-        digest.update(&[*i, 0u8]);
+    digest.update(&[TAG_STRING]);
+    digest.update(&(val.encode_utf16().count() as u32).to_le_bytes());
+    for unit in val.encode_utf16() {
+        digest.update(&unit.to_le_bytes());
     }
     digest.finalize() as u32
 }
 
 pub fn get_i32_hash(val: i32) -> u32 {
-    let mut digest = Digest::new();
-    digest.update(&[8u8]);
-    digest.update(&val.to_le_bytes());
-    digest.finalize() as u32
+    get_tagged_hash(TAG_INT, &val.to_le_bytes())
 }
 
 pub fn get_f32_hash(val: f32) -> u32 {
+    get_tagged_hash(TAG_FLOAT, &val.to_bits().to_le_bytes())
+}
+
+pub fn get_bool_hash(val: bool) -> u32 {
+    get_tagged_hash(TAG_BOOLEAN, &[u8::from(val)])
+}
+
+pub fn get_list_hash(items: impl IntoIterator<Item = u32>) -> u32 {
     let mut digest = Digest::new();
-    digest.update(&[7u8]);
-    digest.update(&val.to_bits().to_le_bytes());
+    digest.update(&[TAG_LIST_START]);
+    for item in items {
+        digest.update(&item.to_le_bytes());
+    }
+    digest.update(&[TAG_LIST_END]);
     digest.finalize() as u32
 }
 
-pub fn get_idor_hash(val: &IdOr<basic::SoundEvent>) -> u32 {
+/// Vanilla `HashOps.createMap`: the entries sorted by key hash, then value hash (`MAP_ENTRY_ORDER`).
+pub fn get_map_hash(entries: impl IntoIterator<Item = (u32, u32)>) -> u32 {
+    let mut entries: Vec<_> = entries.into_iter().collect();
+    entries.sort_unstable();
     let mut digest = Digest::new();
-    digest.update(&[6u8]);
-    match val {
-        IdOr::Id(sound) => {
-            digest.update(&[1u8]);
-            digest.update(&get_str_hash(sound.to_name()).to_le_bytes());
-        }
-        IdOr::Value(sound) => {
-            digest.update(&[2u8]);
-            digest.update(&get_str_hash(sound.sound_name.as_str()).to_le_bytes());
-            if let Some(range) = sound.range {
-                digest.update(&[1u8]);
-                digest.update(&get_f32_hash(range).to_le_bytes());
-            } else {
-                digest.update(&[0u8]);
+    digest.update(&[TAG_MAP_START]);
+    for (key, value) in entries {
+        digest.update(&key.to_le_bytes());
+        digest.update(&value.to_le_bytes());
+    }
+    digest.update(&[TAG_MAP_END]);
+    digest.finalize() as u32
+}
+
+/// The hash of an NBT value like vanilla (`NbtOps` converted to `HashOps`). Booleans are bytes in
+/// NBT, so a value whose codec has booleans needs its own hash.
+pub fn get_nbt_hash(tag: &NbtTag) -> u32 {
+    match tag {
+        NbtTag::End => get_tagged_hash(TAG_EMPTY, &[]),
+        NbtTag::Byte(v) => get_tagged_hash(TAG_BYTE, &v.to_le_bytes()),
+        NbtTag::Short(v) => get_tagged_hash(TAG_SHORT, &v.to_le_bytes()),
+        NbtTag::Int(v) => get_i32_hash(*v),
+        NbtTag::Long(v) => get_tagged_hash(TAG_LONG, &v.to_le_bytes()),
+        NbtTag::Float(v) => get_f32_hash(*v),
+        NbtTag::Double(v) => get_tagged_hash(TAG_DOUBLE, &v.to_bits().to_le_bytes()),
+        NbtTag::String(v) => get_str_hash(v),
+        NbtTag::List(list) => get_list_hash(list.iter().map(get_nbt_hash)),
+        NbtTag::Compound(compound) => get_map_hash(
+            compound
+                .child_tags
+                .iter()
+                .map(|(key, value)| (get_str_hash(key), get_nbt_hash(value))),
+        ),
+        NbtTag::ByteArray(bytes) => {
+            let mut digest = Digest::new();
+            digest.update(&[TAG_BYTE_ARRAY_START]);
+            for byte in bytes {
+                digest.update(&byte.to_le_bytes());
             }
+            digest.update(&[TAG_BYTE_ARRAY_END]);
+            digest.finalize() as u32
+        }
+        NbtTag::IntArray(ints) => {
+            let mut digest = Digest::new();
+            digest.update(&[TAG_INT_ARRAY_START]);
+            for int in ints {
+                digest.update(&int.to_le_bytes());
+            }
+            digest.update(&[TAG_INT_ARRAY_END]);
+            digest.finalize() as u32
+        }
+        NbtTag::LongArray(longs) => {
+            let mut digest = Digest::new();
+            digest.update(&[TAG_LONG_ARRAY_START]);
+            for long in longs {
+                digest.update(&long.to_le_bytes());
+            }
+            digest.update(&[TAG_LONG_ARRAY_END]);
+            digest.finalize() as u32
         }
     }
-    digest.finalize() as u32
+}
+
+/// The hash of a text component as the client computes it: vanilla `ComponentSerialization.CODEC`
+/// of the component it got, i.e. the NBT we send with the style flags as booleans.
+pub fn get_text_hash(text: &pumpkin_util::text::TextComponent) -> u32 {
+    get_text_nbt_hash(
+        &text.to_nbt_tag_for_version(&pumpkin_util::version::JavaMinecraftVersion::V_26_2),
+    )
+}
+
+fn get_text_nbt_hash(tag: &NbtTag) -> u32 {
+    let NbtTag::Compound(compound) = tag else {
+        return get_nbt_hash(tag);
+    };
+    // (`Component.tryCollapseToString`)
+    if compound.child_tags.len() == 1
+        && let Some(NbtTag::String(text)) = compound.child_tags.get("text")
+    {
+        return get_str_hash(text);
+    }
+    get_map_hash(compound.child_tags.iter().map(|(key, value)| {
+        let value = match (key.as_ref(), value) {
+            (
+                "bold" | "italic" | "underlined" | "strikethrough" | "obfuscated" | "interpret"
+                | "hat",
+                NbtTag::Byte(flag),
+            ) => get_bool_hash(*flag != 0),
+            ("extra" | "with", NbtTag::List(list)) => {
+                get_list_hash(list.iter().map(get_text_nbt_hash))
+            }
+            ("hover_event", NbtTag::Compound(hover)) => {
+                get_map_hash(hover.child_tags.iter().map(|(key, value)| {
+                    let value = if matches!(key.as_ref(), "value" | "name") {
+                        get_text_nbt_hash(value)
+                    } else {
+                        get_nbt_hash(value)
+                    };
+                    (get_str_hash(key), value)
+                }))
+            }
+            _ => get_nbt_hash(value),
+        };
+        (get_str_hash(key), value)
+    }))
+}
+
+/// Vanilla `SoundEvent.CODEC`: a registered sound as its id, an inline one as
+/// `{sound_id, range}`.
+pub fn get_idor_hash(val: &IdOr<basic::SoundEvent>) -> u32 {
+    match val {
+        IdOr::Id(sound) => get_str_hash(&format!("minecraft:{}", sound.to_name())),
+        IdOr::Value(sound) => {
+            let id = if sound.sound_name.contains(':') {
+                Cow::Borrowed(sound.sound_name.as_str())
+            } else {
+                Cow::Owned(format!("minecraft:{}", sound.sound_name))
+            };
+            let mut entries = vec![(get_str_hash("sound_id"), get_str_hash(&id))];
+            if let Some(range) = sound.range {
+                entries.push((get_str_hash("range"), get_f32_hash(range)));
+            }
+            get_map_hash(entries)
+        }
+    }
 }
 
 pub fn put_idor(nbt: &mut NbtCompound, key: &str, val: &IdOr<basic::SoundEvent>) {
@@ -752,6 +896,129 @@ mod tests {
         );
         assert_eq!(MaxStackSizeImpl { size: 99 }.get_hash(), -1632321551i32);
         assert_eq!(MapIdImpl { id: 10 }.get_hash(), -919192125i32);
+    }
+
+    /// A shop text like the BedWars plugin makes it: legacy codes, not italic.
+    fn shop_text(legacy: &str) -> pumpkin_util::text::TextComponent {
+        let mut text = pumpkin_util::text::TextComponent::from_legacy_string(legacy);
+        text.0.style.italic = Some(false);
+        text
+    }
+
+    // Expected values: the 26.3 client's hash generator (`TypedDataComponent.encodeValue` with
+    // `HashOps.CRC32C_INSTANCE`) on the same component values.
+    #[test]
+    fn text_component_hashes_match_vanilla() {
+        use pumpkin_util::text::TextComponent;
+        let hash = |name: TextComponent| CustomNameImpl { name }.get_hash();
+        assert_eq!(hash(shop_text("§6Bronze")), -661018398);
+        assert_eq!(hash(shop_text("§f§l10 §6§lBronze")), 394693686);
+        // plain texts are strings, hashed as UTF-16
+        assert_eq!(hash(TextComponent::text("Holzschwert")), -945663634);
+        assert_eq!(hash(TextComponent::text("Rüstung")), 829123445);
+        assert_eq!(
+            hash(TextComponent::text("").add_child(TextComponent::text("abc"))),
+            1904362774
+        );
+        assert_eq!(
+            hash(
+                TextComponent::text("x").color(pumpkin_util::text::color::Color::Rgb(
+                    pumpkin_util::text::color::RGBColor::new(0x12, 0xAB, 0x34)
+                ))
+            ),
+            1212270893
+        );
+        let lore = LoreImpl {
+            lines: vec![
+                shop_text("§7Preis: §f§l1 Bronze"),
+                TextComponent::text("plain line"),
+            ],
+        };
+        assert_eq!(lore.get_hash(), -1234119561);
+        assert_eq!(LoreImpl { lines: vec![] }.get_hash(), -1978007022);
+    }
+
+    #[test]
+    fn shop_item_component_hashes_match_vanilla() {
+        assert_eq!(
+            EnchantmentsImpl {
+                enchantment: Cow::Borrowed(&[
+                    (&crate::Enchantment::SHARPNESS, 1),
+                    (&crate::Enchantment::KNOCKBACK, 2),
+                ]),
+            }
+            .get_hash(),
+            -479181350
+        );
+        assert_eq!(UnbreakableImpl.get_hash(), -982207288);
+        assert_eq!(DyedColorImpl { rgb: 16733525 }.get_hash(), 1259071361);
+        assert_eq!(DamageImpl { damage: 5 }.get_hash(), 645064431);
+        assert_eq!(MaxStackSizeImpl { size: 16 }.get_hash(), 1769065625);
+        assert_eq!(RepairCostImpl { cost: 3 }.get_hash(), -499649379);
+        assert_eq!(
+            RarityImpl {
+                rarity: Rarity::Rare
+            }
+            .get_hash(),
+            -1420566726
+        );
+        assert_eq!(
+            EnchantmentGlintOverrideImpl { glint: true }.get_hash(),
+            -1019818302
+        );
+        // the 1.8 sword blocking and hit box of the plugin
+        assert_eq!(
+            ConsumableImpl::new(
+                1_000_000.0,
+                ConsumeAnimation::Block,
+                IdOr::Value(basic::SoundEvent {
+                    sound_name: "minecraft:intentionally_empty".to_string(),
+                    range: None,
+                }),
+                false,
+                Cow::Borrowed(&[]),
+            )
+            .get_hash(),
+            1525759798
+        );
+        assert_eq!(
+            AttackRangeImpl {
+                min_reach: 0.0,
+                max_reach: 3.0,
+                min_creative_reach: 0.0,
+                max_creative_reach: 5.0,
+                hitbox_margin: 0.1,
+                mob_factor: 1.0,
+            }
+            .get_hash(),
+            925556511
+        );
+        let potion = |custom_effects| PotionContentsImpl {
+            potion_id: None,
+            custom_color: None,
+            custom_effects,
+            custom_name: None,
+        };
+        assert_eq!(
+            PotionContentsImpl {
+                potion_id: Some(i32::from(crate::potion::Potion::SWIFTNESS.id)),
+                ..potion(vec![])
+            }
+            .get_hash(),
+            -1164789092
+        );
+        assert_eq!(
+            potion(vec![StatusEffectInstance {
+                effect_id: Cow::Borrowed("minecraft:speed"),
+                amplifier: 1,
+                duration: 600,
+                ambient: false,
+                show_particles: true,
+                show_icon: true,
+            }])
+            .get_hash(),
+            -1660140030
+        );
     }
 
     fn assert_round_trip<T: DataComponentImpl + Clone + 'static>(
