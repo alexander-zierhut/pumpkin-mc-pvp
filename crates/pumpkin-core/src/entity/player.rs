@@ -4906,11 +4906,15 @@ impl Player {
         // Reset air supply & drowning ticks on death
         self.breath_manager.reset(self);
 
+        // Health first: `send_health` (and the per-tick sync) skip clients that have not loaded, so marking the
+        // client unloaded before it meant the client never learned it is at 0 health.
+        self.send_health();
+        self.last_sent_health
+            .store(self.living_entity.health.load() as i32, Ordering::Relaxed);
+        self.send_combat_death(death_msg);
         if matches!(self.client.as_ref(), ClientPlatform::Java(_)) {
             self.set_client_loaded(false);
         }
-        self.send_combat_death(death_msg);
-        self.send_health();
         self.send_bedrock_respawn_state(RespawnState::SearchingForSpawn);
     }
 
