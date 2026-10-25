@@ -576,6 +576,54 @@ impl pumpkin::plugin::particles::Host for PluginHostState {}
 impl pumpkin::plugin::sounds::Host for PluginHostState {}
 
 impl pumpkin::plugin::world::HostWorld for PluginHostState {
+    fn set_chunks_forced(
+        &mut self,
+        world: Resource<World>,
+        from: WitBlockPos,
+        to: WitBlockPos,
+        forced: bool,
+    ) -> wasmtime::Result<()> {
+        let world = self.get(&world)?.clone();
+        let mut chunks = world
+            .forced_chunks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // `forced_chunks` only keeps chunks simulated; the force ticket is what loads them
+        let mut chunk_loading = world
+            .level
+            .chunk_loading
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for x in (from.x.min(to.x) >> 4)..=(from.x.max(to.x) >> 4) {
+            for z in (from.z.min(to.z) >> 4)..=(from.z.max(to.z) >> 4) {
+                let pos = pumpkin_util::math::vector2::Vector2::new(x, z);
+                if forced {
+                    if chunks.insert(pos) {
+                        chunk_loading.add_force_ticket(pos);
+                    }
+                } else if chunks.remove(&pos) {
+                    chunk_loading.remove_force_ticket(pos);
+                }
+            }
+        }
+        chunk_loading.send_change();
+        drop(chunk_loading);
+        drop(chunks);
+        world.update_active_chunks();
+        Ok(())
+    }
+
+    fn is_chunk_loaded(
+        &mut self,
+        world: Resource<World>,
+        chunk_x: i32,
+        chunk_z: i32,
+    ) -> wasmtime::Result<bool> {
+        let world = self.get(&world)?.clone();
+        let pos = pumpkin_util::math::vector2::Vector2::new(chunk_x, chunk_z);
+        Ok(world.level.read_chunk_sync(&pos, |_| ()).is_some())
+    }
+
     fn get_id(&mut self, world: Resource<World>) -> wasmtime::Result<String> {
         Ok(self.get(&world)?.get_world_name().to_string())
     }
