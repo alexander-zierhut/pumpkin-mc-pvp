@@ -332,7 +332,7 @@ impl ConsumableImpl {
             .parse::<ConsumeAnimation>()
             .ok()?;
         let sound_event = get_idor(compound, "sound", Sound::EntityGenericEat);
-        let consume_particles = compound.get_bool("has_consume_particles").unwrap_or(false);
+        let consume_particles = compound.get_bool("has_consume_particles").unwrap_or(true);
         let opt_list = compound.get_list("on_consume_effects");
         let effects: Cow<'static, [ConsumeEffect]> = if let Some(effect_list) = opt_list {
             effect_list
